@@ -1,25 +1,41 @@
 # file_transfer agent
 
 A Choria external agent that moves files to and from nodes in chunks over
-standard Choria RPC, with whole-file SHA-256 verification. OpenBolt's Choria
-transport uses it for `upload` and `download` and for delivering task files
-that do not fit inline.
+standard Choria RPC, with whole-file SHA-256 verification. Any Choria client
+can use it to put files on nodes or fetch files from them. It was designed
+for OpenBolt's Choria transport, which uses it for `upload` and `download`,
+but nothing in it is specific to OpenBolt.
 
 Every chunk is a signed, base64-encoded RPC round trip, so transfers through
 Choria are far less efficient than a download from a file server. The agent
 is meant for smaller files. Gigabytes belong on a file server.
+
+## Why an external agent
+
+Choria runs a Ruby MCollective agent through a shim that loads the whole
+MCollective library for every request, which costs most of a second on a
+node before the action runs. An external agent is a plain process that reads
+the request from a file and writes the reply to another, and this one loads
+only the Ruby standard library, so a request costs a few tens of
+milliseconds. A transfer is thousands of requests, one per chunk, and that
+difference is the difference between minutes and hours. The server also
+validates every input against the JSON DDL before the process starts, so the
+agent needs no MCollective runtime on the node at all.
 
 ## Actions
 
 | Action | Purpose | Inputs | Outputs |
 |--------|---------|--------|---------|
 | `mktemp` | Create a session directory, sweep stale sessions | `session` | `path`, `swept` |
-| `put` | Write one chunk into a session, verify and move on the last | `session`, `name`, `offset`, `data`, `compressed`, `final`, `sha256`, `destination`, `mode` | `bytes`, `size`, `sha256` |
+| `put` | Write one chunk into a session, verify and move on the last | `session`, `name`, `offset`, `data`, `final`, `sha256`, `destination`, `mode` | `bytes`, `size`, `sha256` |
 | `cleanup` | Remove a session directory | `session` | `removed` |
-| `get` | Read one chunk of a file | `path`, `offset`, `max_bytes`, `compress` | `data`, `bytes`, `compressed`, `eof`, `size` |
+| `get` | Read one chunk of a file | `path`, `offset`, `max_bytes` | `data`, `bytes`, `eof`, `size` |
 | `stat` | Describe a path | `path`, `checksum` | `exists`, `type`, `symlink`, `size`, `mode`, `mtime`, `sha256` |
 | `list` | List one page of a directory | `path`, `offset`, `limit` | `entries`, `total` |
 | `mkdir` | Create a directory and missing parents | `path`, `mode` | `created` |
+
+Chunk `data` is base64 encoded in both directions and never compressed.
+Compress a file before sending it when its size matters.
 
 Temporary storage on the node is addressed only by `session`, a lowercase
 UUID the caller chooses, and `name`, a path relative to the session

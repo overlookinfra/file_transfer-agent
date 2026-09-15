@@ -1,0 +1,539 @@
+#!/opt/puppetlabs/puppet/bin/ruby
+# frozen_string_literal: true
+
+# Choria external agent for chunked file transfer with SHA-256 verification.
+#
+# The Choria server runs one process per request. It names the request and
+# reply files and the settings file in the environment, validates the inputs
+# against the JSON DDL before starting the process, and logs stdout at INFO
+# and stderr at ERROR.
+#
+# Temporary storage is addressed only by a session UUID and a name relative
+# to that session. Sessions live under the agent's own temp root, are created
+# 0700, and are checked with lstat on every use so that a planted link or a
+# directory owned by someone else is never adopted.
+
+require 'digest'
+require 'fileutils'
+require 'find'
+require 'json'
+require 'securerandom'
+require 'tmpdir'
+
+module FileTransfer
+  ACTIVATION_PROTOCOL = 'io.choria.mcorpc.external.v1.activation_request'
+
+  SESSION_PREFIX = 'file_transfer-'
+  UUID_REGEX = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
+  SHA256_REGEX = /\A[0-9a-f]{64}\z/
+  MODE_REGEX = /\A[0-7]{3,4}\z/
+
+  DEFAULT_STALE_AFTER = 86_400 # 24 hours
+  LIST_DEFAULT_LIMIT = 1000
+  LIST_MAX_LIMIT = 2000
+  # The most one get reply may hold, 64 MiB. A process handles one request
+  # and the caller sizes chunks to the broker's limit, so no honest request
+  # comes near this. It exists because a caller is not trusted to be sane,
+  # and a get asking for an absurd max_bytes would otherwise read a whole
+  # file into memory. put's data is bounded by the DDL's maxlength, the same
+  # number, since the server only runs a regex on an input whose maxlength
+  # is non-zero.
+  MAX_CHUNK_BYTES = 67_108_864
+  READ_BLOCK = 65_536
+
+  OK = 0
+  ABORTED = 1
+  UNKNOWN_ACTION = 2
+  MISSING_DATA = 3
+  INVALID_DATA = 4
+  UNKNOWN_ERROR = 5
+
+  # A reply with a non-zero status code.
+  class Failure < StandardError
+    attr_reader :statuscode, :data
+
+    def initialize(statuscode, message, data = {})
+      super(message)
+      @statuscode = statuscode
+      @data = data
+    end
+  end
+
+  # Settings from the file the server names in CHORIA_EXTERNAL_CONFIG, or the
+  # same path with .cfg, which is where the Puppet module writes them, as
+  # "key = value" lines. That is MCollective's plugin.d format, and the
+  # MCollective library reads it into pluginconf, but loading that library
+  # costs most of a second per request, which is what an external agent is
+  # chosen to avoid, so the few lines below read it directly.
+  def self.settings(path)
+    file = [path, "#{path}.cfg"].find { |candidate| File.file?(candidate) }
+    return {} unless file
+
+    File.read(file, encoding: Encoding::UTF_8).scrub.each_line.with_object({}) do |line, values|
+      line = line.strip
+      next if line.empty? || line.start_with?('#')
+
+      key, value = line.split('=', 2)
+      values[key.strip] = value.strip unless value.nil?
+    end
+  end
+
+  # One request. Every action returns the reply data or raises.
+  class Agent
+    ACTIONS = ['mktemp', 'put', 'cleanup', 'get', 'stat', 'list', 'mkdir'].freeze
+
+    def initialize(request, settings)
+      @action = request['action']
+      @data = request['data'].is_a?(Hash) ? request['data'] : {}
+      @settings = settings
+    end
+
+    # A SystemCallError is the operating system refusing something an action
+    # asked of the filesystem, such as a parent that does not exist, a
+    # permission, a full or read-only filesystem, or a name too long. Those
+    # are the caller's problem to act on, so they answer Aborted with the
+    # system's message. Any other exception is a bug in the agent and
+    # answers UnknownError with its class, logged for the server.
+    def reply
+      raise Failure.new(UNKNOWN_ACTION, "Unknown action #{@action.inspect}") unless ACTIONS.include?(@action)
+
+      { 'statuscode' => OK, 'statusmsg' => 'OK', 'data' => method(@action).call }
+    rescue Failure => e
+      { 'statuscode' => e.statuscode, 'statusmsg' => e.message.scrub, 'data' => e.data }
+    rescue SystemCallError => e
+      { 'statuscode' => ABORTED, 'statusmsg' => e.message.scrub, 'data' => {} }
+    rescue StandardError => e
+      warn "file_transfer #{@action}: #{e.class}: #{e.message}"
+      { 'statuscode' => UNKNOWN_ERROR, 'statusmsg' => "#{e.class}: #{e.message}".scrub, 'data' => {} }
+    end
+
+    private
+
+    def mktemp
+      path = session_path(string_input('session'))
+      seconds = stale_after
+      begin
+        Dir.mkdir(path, 0o700)
+      rescue Errno::EEXIST
+        raise Failure.new(ABORTED, "#{path} already exists")
+      end
+      { 'path' => path, 'swept' => sweep_stale_sessions(temp_root, File.basename(path), seconds) }
+    end
+
+    def put
+      session = session_path(string_input('session'))
+      raise Failure.new(ABORTED, "Session #{session} does not exist") if session_stat(session).nil?
+
+      name = validated_name(string_input('name'))
+      offset = integer_input('offset')
+      final = boolean_input('final')
+      digest = optional_input('sha256', SHA256_REGEX, 'a lowercase SHA-256 hex digest')
+      destination = @data['destination'].nil? ? nil : path_input('destination')
+      mode = optional_mode('mode')
+      raise Failure.new(MISSING_DATA, 'The sha256 input is required with final') if final && digest.nil?
+      if destination && (destination == temp_root || destination.start_with?("#{temp_root}/"))
+        raise Failure.new(INVALID_DATA, "The destination must be outside the agent's temporary root")
+      end
+
+      content = decode_chunk(string_input('data'))
+      path = File.join(session, name)
+      # The first chunk creates the session file, every later chunk opens
+      # it and must find the chunks before it already there.
+      file = offset.zero? ? create_session_file(session, name) : open_session_file(session, name, offset)
+      begin
+        file.seek(offset)
+        file.write(content)
+        file.flush
+        size = file.stat.size
+        return { 'bytes' => content.bytesize, 'size' => size, 'sha256' => nil } unless final
+
+        # The last chunk verifies the whole file and sets its mode. The
+        # file then leaves the session for the destination, or stays there
+        # for a caller that uses it in place and removes it with cleanup.
+        actual = digest_of(file)
+        unless actual == digest
+          raise Failure.new(ABORTED, "Checksum mismatch for #{name}: expected #{digest}, got #{actual}",
+            'bytes' => content.bytesize, 'size' => size, 'sha256' => actual)
+        end
+        file.chmod(mode) if mode
+        file_mode = file.stat.mode & 0o7777
+      ensure
+        file.close
+      end
+
+      deliver(path, destination, file_mode) if destination
+      { 'bytes' => content.bytesize, 'size' => size, 'sha256' => actual }
+    end
+
+    def cleanup
+      path = session_path(string_input('session'))
+      return { 'removed' => false } if session_stat(path).nil?
+
+      FileUtils.remove_entry_secure(path)
+      { 'removed' => true }
+    end
+
+    def get
+      path = path_input('path')
+      offset = integer_input('offset')
+      max_bytes = integer_input('max_bytes')
+      max_bytes = MAX_CHUNK_BYTES if max_bytes > MAX_CHUNK_BYTES
+
+      stat, content = open_regular_file(path) do |file|
+        file.seek(offset)
+        [file.stat, file.read(max_bytes) || '']
+      end
+
+      { 'data' => [content].pack('m0'), 'bytes' => content.bytesize,
+        'eof' => offset + content.bytesize >= stat.size, 'size' => stat.size }
+    end
+
+    def stat
+      path = path_input('path')
+      checksum = boolean_input('checksum')
+      description = describe(path)
+      if description.nil?
+        return { 'exists' => false, 'type' => nil, 'symlink' => nil, 'size' => nil, 'mode' => nil, 'mtime' => nil,
+                 'sha256' => nil }
+      end
+
+      sha256 = checksum && description['type'] == 'file' ? open_regular_file(path) { |file| digest_of(file) } : nil
+      description.merge('exists' => true, 'sha256' => sha256)
+    end
+
+    def list
+      path = path_input('path')
+      offset = integer_input('offset', default: 0)
+      limit = integer_input('limit', default: LIST_DEFAULT_LIMIT)
+      limit = LIST_MAX_LIMIT if limit > LIST_MAX_LIMIT
+
+      names = Dir.children(path, encoding: Encoding::UTF_8).sort
+      page = names[offset, limit] || []
+      entries = page.filter_map do |name|
+        description = describe(File.join(path, name))
+        description&.merge('name' => name.scrub)
+      end
+      # An entry that vanished between the listing and its lstat is left out
+      # of the page and of the total, so the caller's paging arithmetic holds.
+      { 'entries' => entries, 'total' => names.length - (page.length - entries.length) }
+    end
+
+    def mkdir
+      path = path_input('path')
+      mode = optional_mode('mode')
+
+      missing = []
+      current = path
+      until File.directory?(current)
+        raise Failure.new(ABORTED, "#{current} exists and is not a directory") if File.exist?(current)
+
+        missing.unshift(current)
+        parent = File.dirname(current)
+        break if parent == current
+
+        current = parent
+      end
+      create_directories(missing, mode)
+      { 'created' => !missing.empty? }
+    end
+
+    # Without a mode, the umask applies. With one, each directory is created
+    # and then changed through a handle opened without following links, so
+    # the mode lands only on the directory this request made. The kernel
+    # drops setuid and setgid from the mode given to mkdir, so the chmod is
+    # what makes a four-digit mode arrive as requested.
+    def create_directories(paths, mode)
+      paths.each do |dir|
+        Dir.mkdir(dir)
+        File.open(dir, File::RDONLY | File::NOFOLLOW) { |handle| handle.chmod(mode) } if mode
+      end
+    end
+
+    # Sessions
+
+    # The root under which sessions live, resolved to its real path so the
+    # session paths, the sweep, and the audit line all name the place the
+    # agent writes. It must be a directory the agent's user or root owns
+    # that nobody else can write to unless the sticky bit protects entries,
+    # because anyone who can rename a session directory away can put a link
+    # in its place between a check and a write.
+    def temp_root
+      return @temp_root if @temp_root
+
+      configured = @settings['tmpdir']
+      root = configured.nil? || configured.empty? ? Dir.tmpdir : configured
+      raise Failure.new(ABORTED, "The tmpdir setting #{root} must be an absolute path") unless File.absolute_path?(root)
+
+      begin
+        resolved = File.realpath(File.expand_path(root))
+        stat = File.stat(resolved)
+      rescue SystemCallError
+        raise Failure.new(ABORTED, "The tmpdir setting #{root} is not a directory the agent can use")
+      end
+      usable = stat.directory? && [Process.euid, 0].include?(stat.uid) && (stat.mode.nobits?(0o022) || stat.sticky?)
+      unless usable
+        raise Failure.new(ABORTED, "The tmpdir setting #{root} is not a directory owned by the agent's user or root " \
+                                   'that is unwritable by others or has the sticky bit')
+      end
+
+      @temp_root = resolved
+    end
+
+    def session_path(session)
+      raise Failure.new(INVALID_DATA, 'The session must be a lowercase UUID') unless session.match?(UUID_REGEX)
+
+      File.join(temp_root, "#{SESSION_PREFIX}#{session}")
+    end
+
+    # The lstat of the session directory, nil when there is nothing at its
+    # path, or a failure when what is there is not a private directory the
+    # agent's user owns.
+    def session_stat(path)
+      stat = File.lstat(path)
+    rescue Errno::ENOENT
+      nil
+    else
+      ensure_private_directory(stat, path)
+      stat
+    end
+
+    # The session directory and every directory inside it must be a real
+    # directory the agent's user owns that nobody else can reach.
+    def ensure_private_directory(stat, path)
+      raise Failure.new(ABORTED, "#{path} is a symbolic link") if stat.symlink?
+      raise Failure.new(ABORTED, "#{path} is not a directory") unless stat.directory?
+      raise Failure.new(ABORTED, "#{path} is not owned by the agent's user") unless stat.uid == Process.euid
+      raise Failure.new(ABORTED, "#{path} is accessible to other users") unless stat.mode.nobits?(0o077)
+    end
+
+    # Removes every other session under the root whose newest modification
+    # time is older than stale_after. Failures are logged and never fail the
+    # request that triggered the sweep.
+    def sweep_stale_sessions(root, keep, stale_after)
+      cutoff = Time.now - stale_after
+      Dir.children(root).count do |entry|
+        entry != keep && session_name?(entry) && sweep_session(File.join(root, entry), cutoff)
+      end
+    rescue StandardError => e
+      warn "file_transfer sweep of #{root} failed: #{e.class}: #{e.message}"
+      0
+    end
+
+    # Removes one session once it is stale. An entry the agent does not
+    # own is passed over.
+    def sweep_session(path, cutoff)
+      ensure_private_directory(File.lstat(path), path)
+      return false unless stale?(path, cutoff)
+
+      FileUtils.remove_entry_secure(path)
+      true
+    rescue Failure
+      false
+    rescue StandardError => e
+      warn "file_transfer sweep of #{path} failed: #{e.class}: #{e.message}"
+      false
+    end
+
+    # A session is stale when nothing in its tree, the directory itself
+    # included, was modified since the cutoff. The walk stops at the first
+    # entry that was, which for a live session is usually the first one.
+    def stale?(path, cutoff)
+      Find.find(path) do |entry|
+        return false if File.lstat(entry).mtime >= cutoff
+      end
+      true
+    end
+
+    def session_name?(entry)
+      entry.valid_encoding? && entry.start_with?(SESSION_PREFIX) && entry.delete_prefix(SESSION_PREFIX).match?(UUID_REGEX)
+    end
+
+    # Session files
+
+    # The path of name below the session, with the directories above it
+    # created private as needed. Only the agent's user can write inside a
+    # session, so nothing on the way down needs checking.
+    def session_file_path(session, name)
+      path = File.join(session, name)
+      FileUtils.mkdir_p(File.dirname(path), mode: 0o700)
+      path
+    end
+
+    # A first chunk is an exclusive create, since a name is put once per
+    # session.
+    def create_session_file(session, name)
+      File.new(session_file_path(session, name), File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW | File::BINARY, 0o600)
+    end
+
+    def open_session_file(session, name, offset)
+      path = session_file_path(session, name)
+      begin
+        size = File.size(path)
+      rescue Errno::ENOENT
+        raise Failure.new(INVALID_DATA, "#{name} does not exist in the session, so an earlier chunk was lost")
+      end
+      raise Failure.new(INVALID_DATA, "#{name} is #{size} bytes, so a chunk before offset #{offset} was lost") if size < offset
+
+      File.new(path, File::RDWR | File::NOFOLLOW | File::BINARY)
+    end
+
+    # Chunk data travels base64 encoded in both directions.
+    def decode_chunk(data)
+      data.unpack1('m0')
+    rescue ArgumentError
+      raise Failure.new(INVALID_DATA, 'The data is not valid base64')
+    end
+
+    def digest_of(file)
+      file.rewind
+      digest = Digest::SHA256.new
+      while (block = file.read(READ_BLOCK))
+        digest.update(block)
+      end
+      digest.hexdigest
+    end
+
+    # Opens a path for reading and yields it, failing unless it is a regular
+    # file. The open never blocks, so a FIFO planted at the path cannot hold
+    # the agent until the DDL timeout.
+    def open_regular_file(path)
+      File.open(path, File::RDONLY | File::NONBLOCK | File::BINARY) do |file|
+        raise Failure.new(ABORTED, "#{path} is not a regular file") unless file.stat.file?
+
+        yield(file)
+      end
+    end
+
+    def deliver(path, destination, mode)
+      File.rename(path, destination)
+    rescue Errno::EXDEV
+      copy_beside(path, destination, mode)
+      File.unlink(path)
+    end
+
+    # Copies the verified file into the destination's directory under a
+    # private name of fixed length, created exclusively without following
+    # links, then renames it into place. The copy is removed whenever the
+    # rename did not happen, a signal included. Only a SIGKILL can leave it
+    # behind.
+    def copy_beside(path, destination, mode)
+      staging = File.join(File.dirname(destination), ".file_transfer-#{SecureRandom.hex(8)}")
+      renamed = false
+      File.open(staging, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW | File::BINARY, 0o600) do |copy|
+        File.open(path, File::RDONLY | File::NOFOLLOW | File::BINARY) { |source| IO.copy_stream(source, copy) }
+        copy.chmod(mode)
+      end
+      File.rename(staging, destination)
+      renamed = true
+    ensure
+      FileUtils.rm_f(staging) unless renamed
+    end
+
+    # Paths
+
+    def describe(path)
+      lstat = File.lstat(path)
+      stat = lstat.symlink? ? target_stat(path, lstat) : lstat
+      type = ['file', 'directory'].include?(stat.ftype) ? stat.ftype : 'other'
+      { 'type' => type, 'symlink' => lstat.symlink?, 'size' => stat.size,
+        'mode' => format('%04o', stat.mode & 0o7777), 'mtime' => stat.mtime.to_i }
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      nil
+    end
+
+    def target_stat(path, lstat)
+      File.stat(path)
+    rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP
+      lstat
+    end
+
+    # Inputs
+
+    def string_input(key)
+      value = @data[key]
+      raise Failure.new(MISSING_DATA, "The #{key} input is required") if value.nil?
+      raise Failure.new(INVALID_DATA, "The #{key} input must be a string") unless value.is_a?(String)
+
+      value
+    end
+
+    def optional_input(key, pattern, description)
+      value = @data[key]
+      return nil if value.nil?
+      raise Failure.new(INVALID_DATA, "The #{key} input must be #{description}") unless value.is_a?(String) && value.match?(pattern)
+
+      value
+    end
+
+    def integer_input(key, default: nil)
+      value = @data.fetch(key, default)
+      value = default if value.nil?
+      raise Failure.new(MISSING_DATA, "The #{key} input is required") if value.nil?
+      raise Failure.new(INVALID_DATA, "The #{key} input must be an integer") unless value.is_a?(Integer)
+      raise Failure.new(INVALID_DATA, "The #{key} input must be at least 0") if value.negative?
+
+      value
+    end
+
+    # An absent boolean input is false.
+    def boolean_input(key)
+      value = @data[key]
+      return false if value.nil?
+      raise Failure.new(INVALID_DATA, "The #{key} input must be true or false") unless [true, false].include?(value)
+
+      value
+    end
+
+    def path_input(key)
+      value = string_input(key)
+      unless value.valid_encoding? && !value.include?("\0") && File.absolute_path?(value)
+        raise Failure.new(INVALID_DATA, "The #{key} input must be an absolute path")
+      end
+
+      File.expand_path(value)
+    end
+
+    def optional_mode(key)
+      value = optional_input(key, MODE_REGEX, 'three or four octal digits')
+      value&.to_i(8)
+    end
+
+    def stale_after
+      value = @settings['stale_after']
+      return DEFAULT_STALE_AFTER if value.nil?
+
+      seconds = Integer(value, 10, exception: false)
+      return seconds if seconds&.positive?
+
+      raise Failure.new(ABORTED, "The stale_after setting must be a positive number of seconds, not #{value.inspect}")
+    end
+
+    def validated_name(name)
+      components = name.valid_encoding? ? name.split('/', -1) : []
+      valid = !components.empty? && components.all? do |component|
+        !component.empty? && component != '.' && component != '..' && !component.include?('\\') &&
+          !component.match?(/[[:cntrl:]]/)
+      end
+      return name if valid
+
+      raise Failure.new(INVALID_DATA, 'The name must be a relative path whose components are not empty, ., or .., ' \
+                                      'without backslashes or control characters')
+    end
+  end
+
+  def self.run(env)
+    reply = if env['CHORIA_EXTERNAL_PROTOCOL'] == ACTIVATION_PROTOCOL
+              { 'activate' => true }
+            else
+              request = JSON.parse(File.read(env.fetch('CHORIA_EXTERNAL_REQUEST')))
+              Agent.new(request, settings(env.fetch('CHORIA_EXTERNAL_CONFIG'))).reply
+            end
+    File.write(env.fetch('CHORIA_EXTERNAL_REPLY'), JSON.generate(reply))
+  rescue StandardError => e
+    warn "file_transfer: #{e.class}: #{e.message}"
+    File.write(env.fetch('CHORIA_EXTERNAL_REPLY'),
+      JSON.generate('statuscode' => UNKNOWN_ERROR, 'statusmsg' => "#{e.class}: #{e.message}".scrub, 'data' => {}))
+  end
+end
+
+FileTransfer.run(ENV) if __FILE__ == $PROGRAM_NAME
