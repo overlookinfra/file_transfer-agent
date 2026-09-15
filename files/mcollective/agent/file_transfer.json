@@ -1,0 +1,328 @@
+{
+  "$schema": "https://choria.io/schemas/mcorpc/ddl/v1/agent.json",
+  "metadata": {
+    "name": "file_transfer",
+    "description": "Chunked file transfer with SHA-256 verification",
+    "author": "Overlook InfraTech",
+    "license": "Apache-2.0",
+    "version": "1.0.0",
+    "url": "https://github.com/overlookinfra/file_transfer-agent",
+    "timeout": 120,
+    "provider": "external"
+  },
+  "actions": [
+    {
+      "action": "cleanup",
+      "description": "Remove a session directory that mktemp created",
+      "display": "always",
+      "input": {
+        "session": {
+          "prompt": "Session",
+          "description": "Session identifier, a lowercase UUID chosen by the caller",
+          "type": "string",
+          "validation": "\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z",
+          "maxlength": 36,
+          "optional": false
+        }
+      },
+      "output": {
+        "removed": {
+          "description": "Whether the session directory existed and was removed",
+          "display_as": "Removed",
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "action": "get",
+      "description": "Read a chunk of a file as base64",
+      "display": "failed",
+      "input": {
+        "path": {
+          "prompt": "Path",
+          "description": "Absolute path of the file to read",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "offset": {
+          "prompt": "Offset",
+          "description": "Byte offset to read from",
+          "type": "integer",
+          "optional": false
+        },
+        "max_bytes": {
+          "prompt": "Max Bytes",
+          "description": "Maximum number of raw bytes to read",
+          "type": "integer",
+          "optional": false
+        }
+      },
+      "output": {
+        "data": {
+          "description": "The chunk, base64 encoded",
+          "display_as": "Data",
+          "type": "string"
+        },
+        "bytes": {
+          "description": "Raw bytes in the chunk",
+          "display_as": "Bytes",
+          "type": "integer"
+        },
+        "eof": {
+          "description": "Whether the chunk reaches the end of the file",
+          "display_as": "EOF",
+          "type": "boolean"
+        },
+        "size": {
+          "description": "File size in bytes at the time of the read",
+          "display_as": "Size",
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "action": "list",
+      "description": "List the entries of a directory in name order",
+      "display": "always",
+      "input": {
+        "path": {
+          "prompt": "Path",
+          "description": "Absolute path of the directory",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "offset": {
+          "prompt": "Offset",
+          "description": "Number of entries to skip",
+          "type": "integer",
+          "default": 0,
+          "optional": true
+        },
+        "limit": {
+          "prompt": "Limit",
+          "description": "Maximum number of entries to return",
+          "type": "integer",
+          "default": 1000,
+          "optional": true
+        }
+      },
+      "output": {
+        "entries": {
+          "description": "Entries with name, type, symlink, size, mode, and mtime",
+          "display_as": "Entries",
+          "type": "array"
+        },
+        "total": {
+          "description": "Number of entries in the directory",
+          "display_as": "Total",
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "action": "mkdir",
+      "description": "Create a directory and any missing parents",
+      "display": "always",
+      "input": {
+        "path": {
+          "prompt": "Path",
+          "description": "Absolute path of the directory",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "mode": {
+          "prompt": "Mode",
+          "description": "Permission bits as octal digits for the directories this call creates",
+          "type": "string",
+          "validation": "\\A[0-7]{3,4}\\z",
+          "maxlength": 4,
+          "optional": true
+        }
+      },
+      "output": {
+        "created": {
+          "description": "Whether any directory was created",
+          "display_as": "Created",
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "action": "mktemp",
+      "description": "Create a session directory under the agent's temp root and sweep stale sessions",
+      "display": "always",
+      "input": {
+        "session": {
+          "prompt": "Session",
+          "description": "Session identifier, a lowercase UUID chosen by the caller",
+          "type": "string",
+          "validation": "\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z",
+          "maxlength": 36,
+          "optional": false
+        }
+      },
+      "output": {
+        "path": {
+          "description": "Absolute path of the session directory",
+          "display_as": "Path",
+          "type": "string"
+        },
+        "swept": {
+          "description": "Number of stale session directories removed",
+          "display_as": "Swept",
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "action": "put",
+      "description": "Write a chunk of a file inside a session, verifying it and moving it to its destination on the final chunk",
+      "display": "failed",
+      "input": {
+        "session": {
+          "prompt": "Session",
+          "description": "Session identifier, a lowercase UUID chosen by the caller",
+          "type": "string",
+          "validation": "\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z",
+          "maxlength": 36,
+          "optional": false
+        },
+        "name": {
+          "prompt": "Name",
+          "description": "Path of the file relative to the session directory",
+          "type": "string",
+          "validation": "\\A(\\.{0,2}[^./\\x5c\\x00-\\x1f\\x7f][^/\\x5c\\x00-\\x1f\\x7f]*|\\.\\.[^/\\x5c\\x00-\\x1f\\x7f]+)(/(\\.{0,2}[^./\\x5c\\x00-\\x1f\\x7f][^/\\x5c\\x00-\\x1f\\x7f]*|\\.\\.[^/\\x5c\\x00-\\x1f\\x7f]+))*\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "offset": {
+          "prompt": "Offset",
+          "description": "Byte offset to write at, where 0 creates the file",
+          "type": "integer",
+          "optional": false
+        },
+        "data": {
+          "prompt": "Data",
+          "description": "The chunk, base64 encoded",
+          "type": "string",
+          "validation": "\\A[A-Za-z0-9+/]*={0,2}\\z",
+          "maxlength": 67108864,
+          "optional": false
+        },
+        "final": {
+          "prompt": "Final",
+          "description": "Whether this is the last chunk of the file",
+          "type": "boolean",
+          "default": false,
+          "optional": true
+        },
+        "sha256": {
+          "prompt": "SHA-256",
+          "description": "Expected SHA-256 hex digest of the whole file, required with final",
+          "type": "string",
+          "validation": "\\A[0-9a-f]{64}\\z",
+          "maxlength": 64,
+          "optional": true
+        },
+        "destination": {
+          "prompt": "Destination",
+          "description": "Absolute path to move the verified file to, with final",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": true
+        },
+        "mode": {
+          "prompt": "Mode",
+          "description": "Permission bits as octal digits to apply to the verified file, with final",
+          "type": "string",
+          "validation": "\\A[0-7]{3,4}\\z",
+          "maxlength": 4,
+          "optional": true
+        }
+      },
+      "output": {
+        "bytes": {
+          "description": "Raw bytes written by this call",
+          "display_as": "Bytes",
+          "type": "integer"
+        },
+        "size": {
+          "description": "File size in bytes after the write",
+          "display_as": "Size",
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 hex digest computed on the final chunk",
+          "display_as": "SHA-256",
+          "type": "string"
+        }
+      }
+    },
+    {
+      "action": "stat",
+      "description": "Report whether a path exists and describe it",
+      "display": "always",
+      "input": {
+        "path": {
+          "prompt": "Path",
+          "description": "Absolute path on the node",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "checksum": {
+          "prompt": "Checksum",
+          "description": "Compute the SHA-256 of a regular file",
+          "type": "boolean",
+          "default": false,
+          "optional": true
+        }
+      },
+      "output": {
+        "exists": {
+          "description": "Whether the path exists",
+          "display_as": "Exists",
+          "type": "boolean"
+        },
+        "type": {
+          "description": "file, directory, or other",
+          "display_as": "Type",
+          "type": "string"
+        },
+        "symlink": {
+          "description": "Whether the path itself is a symbolic link",
+          "display_as": "Symlink",
+          "type": "boolean"
+        },
+        "size": {
+          "description": "Size in bytes",
+          "display_as": "Size",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Permission bits as four octal digits",
+          "display_as": "Mode",
+          "type": "string"
+        },
+        "mtime": {
+          "description": "Modification time as Unix seconds",
+          "display_as": "Modified",
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 hex digest when requested for a regular file",
+          "display_as": "SHA-256",
+          "type": "string"
+        }
+      }
+    }
+  ]
+}

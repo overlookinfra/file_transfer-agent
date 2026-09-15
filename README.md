@@ -9,6 +9,32 @@ Every chunk is a signed, base64-encoded RPC round trip, so transfers through
 Choria are far less efficient than a download from a file server. The agent
 is meant for smaller files. Gigabytes belong on a file server.
 
+## Actions
+
+| Action | Purpose | Inputs | Outputs |
+|--------|---------|--------|---------|
+| `mktemp` | Create a session directory, sweep stale sessions | `session` | `path`, `swept` |
+| `put` | Write one chunk into a session, verify and move on the last | `session`, `name`, `offset`, `data`, `compressed`, `final`, `sha256`, `destination`, `mode` | `bytes`, `size`, `sha256` |
+| `cleanup` | Remove a session directory | `session` | `removed` |
+| `get` | Read one chunk of a file | `path`, `offset`, `max_bytes`, `compress` | `data`, `bytes`, `compressed`, `eof`, `size` |
+| `stat` | Describe a path | `path`, `checksum` | `exists`, `type`, `symlink`, `size`, `mode`, `mtime`, `sha256` |
+| `list` | List one page of a directory | `path`, `offset`, `limit` | `entries`, `total` |
+| `mkdir` | Create a directory and missing parents | `path`, `mode` | `created` |
+
+Temporary storage on the node is addressed only by `session`, a lowercase
+UUID the caller chooses, and `name`, a path relative to the session
+directory. The agent keeps sessions under `<tmpdir>/file_transfer-<uuid>`
+and never accepts another temporary location. `cleanup` removes one session,
+and `mktemp` sweeps sessions older than `stale_after`. Nothing else is ever
+removed.
+
+`files/mcollective/agent/file_transfer.json` is the DDL the Choria server
+reads. The Ruby DDL next to it is generated from the JSON with
+
+```
+choria plugin generate ddl file_transfer.json file_transfer.ddl --convert
+```
+
 ## Installation
 
 ```yaml
