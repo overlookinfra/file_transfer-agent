@@ -1,0 +1,14 @@
+/pkg/
+/Gemfile
+/Gemfile.lock
+/Gemfile.local
+/vendor/
+/.vendor/
+/spec/
+/Rakefile
+/.bundle/
+/coverage/
+/.github/
+/.gitignore
+/.pmtignore
+/.rspec_status
