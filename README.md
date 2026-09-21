@@ -112,6 +112,23 @@ client and fails those nodes with `payload_too_large`, naming a lower chunk
 size as the remedy. A node that does not answer a chunk is reported as
 `no_response`. Nothing is retried.
 
+### Command line
+
+The client files also install `mco file_transfer`:
+
+```
+mco file_transfer upload /srv/app.tar /opt/app/app.tar -I web1.example.net -I web2.example.net
+mco file_transfer download /var/log/app.log /tmp/logs -F role=web
+```
+
+`upload` sends a file or directory tree to the destination on every matched
+node. `download` fetches the source from every matched node into
+`DIRECTORY/<identity>`. The usual filters select the nodes, `--timeout` is
+the wait for every node's reply to one chunk (5 seconds by default), and
+`--chunk-size`, `--download-group-size`, and `--keep-session` map onto the
+client arguments above. The exit code is 0 when every node succeeded, 2 when
+any failed, and 1 when no node matched.
+
 ## Installation
 
 ```yaml

@@ -9,6 +9,7 @@ mcollective_agent_file_transfer::server_directories: []
 mcollective_agent_file_transfer::executable_files:
 - agent/file_transfer
 mcollective_agent_file_transfer::client_files:
+- application/file_transfer.rb
 - util/file_transfer.rb
 - util/file_transfer/connection.rb
 - util/file_transfer/default_logger.rb
