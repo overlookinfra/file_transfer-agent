@@ -8,5 +8,15 @@ mcollective_agent_file_transfer::server_files:
 mcollective_agent_file_transfer::server_directories: []
 mcollective_agent_file_transfer::executable_files:
 - agent/file_transfer
-mcollective_agent_file_transfer::client_files: []
-mcollective_agent_file_transfer::client_directories: []
+mcollective_agent_file_transfer::client_files:
+- util/file_transfer.rb
+- util/file_transfer/connection.rb
+- util/file_transfer/default_logger.rb
+- util/file_transfer/download.rb
+- util/file_transfer/rpc.rb
+- util/file_transfer/session.rb
+- util/file_transfer/sizing.rb
+- util/file_transfer/transfer.rb
+- util/file_transfer/upload.rb
+mcollective_agent_file_transfer::client_directories:
+- util/file_transfer

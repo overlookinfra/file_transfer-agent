@@ -51,6 +51,67 @@ reads. The Ruby DDL next to it is generated from the JSON with
 choria plugin generate ddl file_transfer.json file_transfer.ddl --convert
 ```
 
+## Client library
+
+The module also ships the client side of the protocol, the MCollective util
+plugin `MCollective::Util::FileTransfer`, which `mcollective_agent_file_transfer`
+installs on a client host with `client => true`. It sizes chunks to the
+broker's payload limit at run time, verifies every file with SHA-256, keeps
+temporary files in sessions the agent owns, and answers an outcome per node
+rather than raising for one node's failure. OpenBolt's Choria transport is
+an adapter over it.
+
+```ruby
+require 'mcollective'
+require 'mcollective/util/file_transfer'
+
+connection = MCollective::Util::FileTransfer::Connection.new(options)
+client = MCollective::Util::FileTransfer::Client.new(connection: connection)
+
+client.upload('/srv/app.tar', '/opt/app/app.tar', ['web1.example.net', 'web2.example.net'])
+client.download('/var/log/app.log', { 'web1.example.net' => '/tmp/logs/web1' })
+
+session = client.open_session(['web1.example.net'])
+session.put('/srv/facts.json', 'input/facts.json', mode: '0600')
+session.cleanup
+```
+
+`upload` sends a file, or a directory tree, to the same destination on every
+node and answers a hash from identity to `Outcome`. A success carries the
+path the file landed at, a failure a `kind` and a message. The kinds are
+`no_response`, `rpc_error`, `rpc_failed`, `transfer_failed`,
+`payload_too_large`, and `checksum_mismatch`. `download` takes the local
+directory that receives each node's copy and answers the same. A session
+holds files a caller uses on the node and removes afterwards: `put` sends a
+file into it without a destination and answers the nodes that received it,
+`cleanup` removes the session on every node whose cleanup setting is on.
+
+The arguments of `Client.new`:
+
+- `connection`: any object with `with_client(agent, identities, timeout:,
+  publish_timeout:)`, which yields an `MCollective::RPC::Client` addressing
+  those identities directly and serializes the calls, and `nats_wrapper`,
+  the connector's `MCollective::Util::NatsWrapper` or nil. `Connection`
+  builds one from a client options hash.
+- `logger`: any object with `debug(message)`, `warn(message)`, and
+  `warn_once(id, message)`. The default writes to `MCollective::Log`.
+- `rpc_timeout`: seconds to wait for every node's reply to one call, and to
+  publish one call to every node. Default 30.
+- `chunk_size`: the most file content one request carries, before the
+  broker's limit lowers it. Default 524288.
+- `download_group_size`: how many nodes one download round asks at once.
+  Default 32.
+- `cleanup`: whether sessions are removed afterwards, `true`, `false`, or a
+  hash from identity to boolean. Default true.
+
+Chunks are sized from the broker's advertised payload limit: the limit less
+a five percent reserve, divided by a fixed wire expansion of 2.5 bytes per
+content byte, capped by `chunk_size`. A download round asks for a third of
+that. A publish guard refuses a request over the limit before it leaves the
+client and fails those nodes with `payload_too_large`, naming a lower chunk
+size as the remedy. A node that does not answer a chunk is reported as
+`no_response`. Nothing is retried.
+
 ## Installation
 
 ```yaml
