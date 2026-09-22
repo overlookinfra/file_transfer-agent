@@ -7,6 +7,7 @@ require 'json'
 require 'securerandom'
 require 'timeout'
 require 'tmpdir'
+require 'zlib'
 
 FILES_DIR = File.expand_path('../files', __dir__)
 AGENT = File.join(FILES_DIR, 'mcollective', 'agent', 'file_transfer')

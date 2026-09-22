@@ -117,24 +117,24 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(File.exist?(File.join(dir_for(node1), 'app.log'))).to be(false)
   end
 
-  it 'fails a node whose reply carries more than the bytes the round asked for' do
+  it 'fails a node whose reply inflates past the bytes the round asked for' do
     stub_file_stats
-    oversized = ['x' * 6_000].pack('m0')
+    bomb = [Zlib::Deflate.deflate("\0" * 4_000_000)].pack('m0')
     rpc.on(:get) do |_args, names, &block|
-      names.each { |name| block.call(nil, rpc_result(name, { data: oversized, bytes: 6_000, eof: false })) }
+      names.each { |name| block.call(nil, rpc_result(name, { data: bomb, bytes: 4_000_000, eof: false })) }
       []
     end
 
     outcomes = client.download('/var/log/app.log', destinations.slice(node1))
 
     expect(outcomes[node1].kind).to eq(:transfer_failed)
-    expect(outcomes[node1].message).to include('6000 bytes, more than the 5461 requested')
+    expect(outcomes[node1].message).to include('inflates past')
   end
 
-  it 'fails a node whose reply is not valid base64' do
+  it 'fails a node whose reply is not a zlib stream' do
     stub_file_stats
     rpc.on(:get) do |_args, names, &block|
-      names.each { |name| block.call(nil, rpc_result(name, { data: 'not base64!', bytes: 5, eof: true })) }
+      names.each { |name| block.call(nil, rpc_result(name, { data: ['plain'].pack('m0'), bytes: 5, eof: true })) }
       []
     end
 
@@ -177,9 +177,13 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(Dir.children(destination)).to eq([node1])
   end
 
-  context 'when a node stays silent for a get' do
-    it 'reports it as not responding after one round' do
+  context 'when every retry at a smaller reply budget stays silent' do
+    let(:chunk_size) { 100_000 }
+
+    it 'fails the download once the budget cannot shrink further' do
       stub_file_stats(node1 => 'a' * 30_000)
+      wrapper.stats[:in_bytes] = 1_500
+      stub_ping
       rpc.on(:get) do |args, names|
         get_calls << args.merge(identities: names)
         []
@@ -187,8 +191,12 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
       outcomes = client.download('/var/log/app.log', destinations.slice(node1))
 
-      expect(get_calls.map { |call| [call[:offset], call[:max_bytes]] }).to eq([[0, 5_461]])
-      expect(outcomes[node1].kind).to eq(:no_response)
+      # A quarter of the chunk first, then a fifth less each time, floored,
+      # until the next request would fall under the 4,096 byte reply minimum.
+      expect(get_calls.map { |call| call[:max_bytes] }).to eq([25_000, 20_000, 16_000, 12_800, 10_240, 8_192, 6_553, 5_242, 4_193])
+      expect(get_calls.map { |call| call[:offset] }.uniq).to eq([0])
+      expect(outcomes[node1].kind).to eq(:payload_too_large)
+      expect(outcomes[node1].message).to include('replies cannot shrink below 4096 bytes')
     end
   end
 
@@ -260,6 +268,63 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(File.read(File.join(tree, 'sub', 'inner.txt'))).to eq('inner')
     expect(File.exist?(File.join(tree, 'linked'))).to be(false)
     expect(log.warnings).to include(a_string_including('Skipping /srv/data/linked', 'symbolic link'))
+  end
+
+  context 'when reply sizes can be measured' do
+    let(:content) { 'a' * 30_000 }
+    # Every get reply adds a fixed envelope plus this many wire bytes per
+    # content byte to the wrapper's in_bytes, as the client would count.
+    let(:reply_expansion) { 2.5 }
+    let(:silent_rounds) { [] }
+
+    before do
+      stub_file_stats(node1 => content)
+      # The stat reply has already been counted by the time the first
+      # round is sized, so replies are measurable from the start.
+      wrapper.stats[:in_bytes] = 1_500
+      stub_ping
+      rpc.on(:get) do |args, names, &block|
+        get_calls << args.merge(identities: names)
+        next [] if silent_rounds.include?(get_calls.length)
+
+        names.each do |name|
+          data = get_data(content, args)
+          wrapper.stats[:in_bytes] += 2_000 + (data[:bytes] * reply_expansion).ceil
+          block.call(nil, rpc_result(name, data))
+        end
+        []
+      end
+    end
+
+    it 'sizes the rounds after the first from the measured reply expansion' do
+      outcomes = client.download('/var/log/app.log', destinations.slice(node1))
+
+      # A quarter of the chunk first, then the whole chunk once the
+      # measured expansion shows the limit allows it.
+      expect(get_calls.map { |call| [call[:offset], call[:max_bytes]] }).to eq([[0, 4_096], [4_096, 16_384], [20_480, 16_384]])
+      expect(outcomes[node1]).to be_success
+      expect(File.binread(File.join(dir_for(node1), 'app.log'))).to eq(content)
+    end
+
+    context 'and the reply expansion is what bounds the request' do
+      let(:reply_expansion) { 100.0 }
+      let(:silent_rounds) { [2] }
+
+      # The chunk size stays at its 16,384 minimum here on purpose. The
+      # retry is decided by the reply budget, which has its own floor, and
+      # not by the chunk minimum that bounds uploads.
+      it 'asks for strictly less on the retry after a silent round' do
+        outcomes = client.download('/var/log/app.log', destinations.slice(node1))
+
+        silent = get_calls[1]
+        retried = get_calls[2]
+        expect(retried[:offset]).to eq(silent[:offset])
+        expect(retried[:max_bytes]).to be < silent[:max_bytes]
+        expect(log.once).to include(['file_transfer_reduction_silent', a_string_including('stayed silent')])
+        expect(outcomes[node1]).to be_success
+        expect(File.binread(File.join(dir_for(node1), 'app.log'))).to eq(content)
+      end
+    end
   end
 
   context 'with a directory whose listing comes from the node' do
@@ -443,6 +508,28 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(outcomes[node2]).to be_success
     end
 
+    it 'does not let a tiny file in a tree shrink the rounds of the files after it' do
+      big = 'b' * 60_000
+      stub_flat_tree({ node1 => { 'a_tiny.txt' => 'x', 'b_big.bin' => big } }, { node1 => 10 })
+      # Replies are measurable from the start and each one costs an
+      # envelope plus wire bytes per content byte, so the tiny file's
+      # single round looks like an enormous expansion if it is counted.
+      wrapper.stats[:in_bytes] = 1_500
+      rpc.on(:get) do |args, names, &block|
+        get_calls << args.merge(identities: names)
+        data = get_data(File.basename(args[:path]) == 'a_tiny.txt' ? 'x' : big, args)
+        wrapper.stats[:in_bytes] += 2_000 + (data[:bytes] * 2.5).ceil
+        names.each { |name| block.call(nil, rpc_result(name, data)) }
+        []
+      end
+
+      outcomes = client.download('/srv/data', destinations.slice(node1))
+
+      big_rounds = get_calls.select { |call| call[:path] == '/srv/data/b_big.bin' }
+      expect(big_rounds.map { |call| call[:max_bytes] }).to eq([4_096, 16_384, 16_384, 16_384, 16_384])
+      expect(outcomes[node1]).to be_success
+    end
+
     it 'refuses an entry name that is not valid in its encoding' do
       stub_directory_stats
       rpc.on(:list) do |_args, names|
@@ -454,6 +541,53 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
       expect(outcomes[node1].kind).to eq(:transfer_failed)
       expect(outcomes[node1].message).to include('not a plain file name')
+    end
+
+    it 'stops a tree whose listings branch without end and reports that node' do
+      stub_directory_stats
+      rpc.on(:list) do |args, names|
+        list_calls << [args[:path], names]
+        entries = ['a', 'b'].map { |name| { name: name, type: 'directory', symlink: false } }
+        results_for(names, { entries: entries, total: 2 })
+      end
+
+      outcomes = client.download('/srv/data', destinations.slice(node1))
+
+      limit = MCollective::Util::FileTransfer::Download::TREE_DIRECTORY_LIMIT
+      expect(outcomes[node1].kind).to eq(:transfer_failed)
+      expect(outcomes[node1].message).to include("more than the #{limit} directories")
+      expect(list_calls.length).to eq(limit)
+    end
+
+    it 'stops a tree that lists more entries than the limit across the walk and reports that node' do
+      stub_const('MCollective::Util::FileTransfer::Download::LISTING_LIMIT', 5)
+      stub_directory_stats
+      rpc.on(:list) do |args, names|
+        list_calls << [args[:path], names]
+        entries = ['a', 'b'].map { |name| { name: name, type: 'directory', symlink: false } }
+        results_for(names, { entries: entries, total: 2 })
+      end
+
+      outcomes = client.download('/srv/data', destinations.slice(node1))
+
+      expect(outcomes[node1].kind).to eq(:transfer_failed)
+      expect(outcomes[node1].message).to include('lists more than 5 entries')
+      expect(list_calls.length).to eq(3)
+    end
+
+    it 'stops a tree nested deeper than the depth limit and reports that node' do
+      stub_const('MCollective::Util::FileTransfer::Download::TREE_DEPTH_LIMIT', 2)
+      stub_directory_stats
+      rpc.on(:list) do |args, names|
+        list_calls << [args[:path], names]
+        results_for(names, { entries: [{ name: 'd', type: 'directory', symlink: false }], total: 1 })
+      end
+
+      outcomes = client.download('/srv/data', destinations.slice(node1))
+
+      expect(outcomes[node1].kind).to eq(:transfer_failed)
+      expect(outcomes[node1].message).to include('nested deeper than the 2 directories')
+      expect(list_calls.map(&:first)).to eq(['/srv/data', '/srv/data/d', '/srv/data/d/d'])
     end
 
     it 'stats each file only on the nodes that listed it, so a node missing one keeps the rest' do

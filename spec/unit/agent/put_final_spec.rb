@@ -202,6 +202,50 @@ RSpec.describe 'file_transfer put final chunk' do
     end
   end
 
+  describe 'retrying a final chunk whose reply was lost' do
+    let(:first_chunk) { 'the first chunk of the payload, ' }
+    let(:second_chunk) { 'and the final chunk of it' }
+    let(:whole) { first_chunk + second_chunk }
+
+    before do
+      run_agent('put', { session: uuid, name: session_name, offset: 0, data: chunk(first_chunk) })
+      run_agent('put', final_retry)
+    end
+
+    # The delivering chunk, sent once by the before hook and again by the
+    # example, which is what a lost reply makes the transport do.
+    def final_retry
+      { session: uuid, name: session_name, offset: first_chunk.bytesize, data: chunk(second_chunk), final: true,
+        sha256: sha256(whole), destination: destination_path }
+    end
+
+    it 'answers the digest again when the destination still holds the delivered file' do
+      reply = run_agent('put', final_retry)
+
+      expect(reply.statuscode).to eq(0)
+      expect(reply.data).to eq('bytes' => second_chunk.bytesize, 'size' => whole.bytesize, 'sha256' => sha256(whole))
+      expect(File.binread(destination_path)).to eq(whole)
+    end
+
+    it 'reports a lost chunk when the destination holds different content' do
+      File.write(destination_path, 'content written by somebody else')
+      reply = run_agent('put', final_retry)
+
+      expect(reply.statuscode).to eq(4)
+      expect(reply.statusmsg).to include('does not exist in the session')
+      expect(File.exist?(session_file)).to be(false)
+      expect(File.binread(destination_path)).to eq('content written by somebody else')
+    end
+
+    it 'applies the requested mode again on the retry' do
+      File.chmod(0o644, destination_path)
+      reply = run_agent('put', final_retry.merge(mode: '0600'))
+
+      expect(reply.statuscode).to eq(0)
+      expect(mode_of(destination_path)).to eq('0600')
+    end
+  end
+
   describe 'delivering across a filesystem boundary' do
     let(:far_dir) { Dir.mktmpdir('file_transfer-xdev', other_filesystem) }
 

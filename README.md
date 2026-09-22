@@ -34,8 +34,10 @@ agent needs no MCollective runtime on the node at all.
 | `list` | List one page of a directory | `path`, `offset`, `limit` | `entries`, `total` |
 | `mkdir` | Create a directory and missing parents | `path`, `mode` | `created` |
 
-Chunk `data` is base64 encoded in both directions and never compressed.
-Compress a file before sending it when its size matters.
+Chunk `data` is always zlib deflated and then base64 encoded, in both
+directions, so a chunk of text costs a fraction of its size on the wire and
+an incompressible chunk costs a few milliseconds of deflate on the sending
+side.
 
 Temporary storage on the node is addressed only by `session`, a lowercase
 UUID the caller chooses, and `name`, a path relative to the session
@@ -104,13 +106,13 @@ The arguments of `Client.new`:
 - `cleanup`: whether sessions are removed afterwards, `true`, `false`, or a
   hash from identity to boolean. Default true.
 
-Chunks are sized from the broker's advertised payload limit: the limit less
-a five percent reserve, divided by a fixed wire expansion of 2.5 bytes per
-content byte, capped by `chunk_size`. A download round asks for a third of
-that. A publish guard refuses a request over the limit before it leaves the
-client and fails those nodes with `payload_too_large`, naming a lower chunk
-size as the remedy. A node that does not answer a chunk is reported as
-`no_response`. Nothing is retried.
+Chunks are sized from the broker's advertised payload limit and two probe
+serializations of a `put` captured at the NATS wrapper without sending, and
+a publish guard refuses a request over the limit before it leaves the
+client. A whole group that stays silent but answers a ping, or a broker
+reconnect during a call, shrinks the chunk by a fifth and retries, with a
+warning naming the cause and the remedy. Downloads measure the size of their
+replies and size the next round from it.
 
 ### Command line
 

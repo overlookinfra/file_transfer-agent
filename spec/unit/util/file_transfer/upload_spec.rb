@@ -15,10 +15,9 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     stub_put
   end
 
-  it 'sends the file in chunks of the chunk size and verifies and moves it with the last one' do
+  it 'sends the file in chunks sized by the probe and verifies and moves it with the last one' do
     outcomes = client.upload(source, destination, nodes)
 
-    expect(wrapper.published.length).to eq(3)
     expect(chunks.map { |call| call[:offset] }).to eq([0, 16_384, 32_768])
     expect(chunks.map { |call| decoded(call).bytesize }).to eq([16_384, 16_384, 7_232])
     expect(chunks.map { |call| decoded(call) }.join).to eq(content)
@@ -29,6 +28,14 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(outcomes.keys).to eq(nodes)
     expect(outcomes.values).to all(be_success)
     expect(outcomes.values.map(&:path)).to eq([destination, destination])
+  end
+
+  it 'measures the request envelope and expansion with two probes before sending anything' do
+    client.upload(source, destination, nodes)
+
+    expect(put_calls.first(2)).to eq(probes)
+    expect(probes.map { |call| decoded(call).bytesize }).to eq([0, MCollective::Util::FileTransfer::Sizing::PROBE_BYTES])
+    expect(wrapper.published.length).to eq(3)
   end
 
   it 'creates one session for the transfer and cleans it up afterwards on every node' do
@@ -65,6 +72,15 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(outcomes[node2].path).to eq('/opt/app/source.bin')
   end
 
+  it 'deflates every chunk, so repeated bytes cost a fraction of their size on the wire' do
+    compressible = local_file('text.bin', 'a' * 40_000)
+
+    client.upload(compressible, destination, [node1])
+
+    expect(chunks.map { |call| call[:data].bytesize }).to all(be < 200)
+    expect(chunks.map { |call| decoded(call) }.join).to eq('a' * 40_000)
+  end
+
   it 'sends an empty file as one final chunk' do
     empty = local_file('empty.bin', '')
 
@@ -96,6 +112,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
 
   it 'reports a node that never answers and carries on with the rest' do
     stub_put { |_args, names| results_for(names - [node2]) }
+    stub_ping
 
     outcomes = client.upload(source, destination, nodes)
 
@@ -183,6 +200,19 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     end
   end
 
+  it 'keeps its chunk size when the broker reconnects during a chunk every node answered' do
+    # The probes never reach the wrapper body, so the third publish here
+    # is the final chunk.
+    wrapper.on_publish { |stats, number| stats[:reconnects] += 1 if number == 3 }
+
+    outcomes = client.upload(source, destination, nodes)
+
+    expect(chunks.map { |call| call[:offset] }).to eq([0, 16_384, 32_768])
+    expect(chunks.map { |call| decoded(call).bytesize }).to eq([16_384, 16_384, 7_232])
+    expect(log.once_messages).not_to include(a_string_including('shrink'))
+    expect(outcomes.values).to all(be_success)
+  end
+
   it 'still cleans up when the session was created and a later step raised' do
     allow(MCollective::Util::FileTransfer::Upload).to receive(:new).and_wrap_original do |original, *args|
       original.call(*args).tap { |upload| allow(upload).to receive(:upload_file).and_raise(RuntimeError, 'boom') }
@@ -221,35 +251,62 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       outcomes = client.upload(source, destination, nodes)
 
       expect(outcomes.values.map(&:kind).uniq).to eq([:payload_too_large])
-      expect(outcomes[node1].message).to include('payload limit of 30000 bytes leaves less than 16384 bytes')
-      expect(rpc.calls).to be_empty
+      expect(outcomes[node1].message).to include('payload limit of 30000 bytes')
+      expect(rpc.calls.map(&:first).uniq).to eq([:put])
+      expect(chunks).to be_empty
     end
   end
 
-  context 'when the broker limit refuses a chunk' do
+  context 'when the broker limit refuses a chunk the probe did not predict' do
     let(:max_payload) { 200_000 }
     let(:chunk_size) { 100_000 }
 
-    # Above 60 KB of content the fake wire grows by an unmodeled 150 KB.
+    # Above 60 KB of content the fake wire grows by an unmodelled 150 KB.
     def wire_size(args)
       super + (decoded(args).bytesize > 60_000 ? 150_000 : 0)
     end
 
-    it 'fails the node before the chunk leaves the client and names the chunk size as the remedy' do
-      big = local_file('big.bin', SecureRandom.random_bytes(70_000))
+    it 'shrinks by the overshoot, warns, and sends the chunk again' do
+      big_content = SecureRandom.random_bytes(70_000)
+      big = local_file('big.bin', big_content)
 
       outcomes = client.upload(big, destination, [node1])
 
-      expect(chunks.map { |call| decoded(call).bytesize }).to eq([70_000])
-      expect(wrapper.published).to be_empty
-      expect(outcomes[node1].kind).to eq(:payload_too_large)
-      expect(outcomes[node1].message).to include("exceeds the broker's 200000 byte payload limit", 'Lower the chunk size')
+      # The refused chunk was 70,000 bytes and the guard reported an
+      # 80,800 byte overshoot; the resend fits under the fake wire's step.
+      expect(chunks.map { |call| call[:offset] }).to eq([0, 0, 55_087])
+      expect(chunks.map { |call| decoded(call).bytesize }).to eq([70_000, 55_087, 14_913])
+      expect(chunks.map { |call| decoded(call) }).to eq([big_content, big_content[0, 55_087], big_content[55_087, 14_913]])
+      expect(log.once).to include([a_string_starting_with('file_transfer_reduction_'), a_string_including('shrink from 100000 to 55087')])
+      expect(outcomes[node1]).to be_success
     end
   end
 
-  context 'when every node stays silent for a chunk' do
-    it 'reports them as not responding' do
+  context 'when every node stays silent for a chunk but answers a ping' do
+    let(:chunk_size) { 100_000 }
+
+    it 'shrinks the chunk by a fifth, warns, and sends it again' do
+      big = local_file('big.bin', SecureRandom.random_bytes(200_000))
+      attempts = 0
+      stub_put do |_args, names|
+        attempts += 1
+        attempts == 1 ? [] : results_for(names)
+      end
+      stub_ping
+
+      outcomes = client.upload(big, destination, nodes)
+
+      expect(chunks.map { |call| call[:offset] }).to eq([0, 0, 80_000, 160_000])
+      expect(chunks.map { |call| decoded(call).bytesize }).to eq([100_000, 80_000, 80_000, 40_000])
+      expect(log.once).to include(['file_transfer_reduction_silent', a_string_including('stayed silent')])
+      expect(outcomes.values).to all(be_success)
+    end
+  end
+
+  context 'when every node is silent and does not answer a ping' do
+    it 'reports them as not responding without shrinking' do
       stub_put { |_args, _names| [] }
+      rpc.on(:ping) { |_args, _names| [] }
 
       outcomes = client.upload(source, destination, nodes)
 
@@ -261,10 +318,10 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
   context 'when the NATS wrapper is not reachable' do
     let(:connection) { FakeConnection.new(nil) }
 
-    it 'sizes chunks from the default limit and warns once' do
+    it 'sizes chunks from the conservative estimate and warns once' do
       outcomes = client.upload(source, destination, [node1])
 
-      expect(log.once_ids).to eq(['file_transfer_max_payload_unknown'])
+      expect(log.once_ids).to include('file_transfer_sizing_fallback', 'file_transfer_max_payload_unknown')
       expect(outcomes[node1]).to be_success
       expect(chunks.map { |call| decoded(call).bytesize }).to eq([16_384, 16_384, 7_232])
     end
@@ -280,7 +337,8 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     context 'and the broker refuses the second landing group' do
       let(:max_payload) { 200_000 }
 
-      # Only the longer destination trips the guard.
+      # Only the longer destination trips the guard, which is the case the
+      # client cannot predict from its own probe.
       def wire_size(args)
         super + (args[:destination] == '/opt/app/source.bin' ? 1_000_000 : 0)
       end
@@ -290,6 +348,29 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
 
         expect(outcomes[node1]).to be_success
         expect(outcomes[node2].kind).to eq(:payload_too_large)
+      end
+    end
+
+    context 'and the second landing group stays silent once' do
+      let(:chunk_size) { 100_000 }
+
+      it 'retries that group at the reduced size instead of failing it' do
+        silent = true
+        stub_put do |args, names|
+          if args[:destination] == '/opt/app/source.bin' && silent
+            silent = false
+            []
+          else
+            results_for(names)
+          end
+        end
+        stub_ping
+
+        outcomes = client.upload(source, '/opt/app', nodes)
+
+        to_node2 = chunks.select { |call| call[:destination] == '/opt/app/source.bin' }
+        expect(to_node2.length).to eq(2)
+        expect(outcomes.values).to all(be_success)
       end
     end
   end
@@ -322,27 +403,49 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       expect(outcomes[node1].path).to eq('/opt/app/tree')
     end
 
-    it 'skips a link to a directory with a warning and sends the directory itself' do
+    it 'uploads both a directory and the link that points at it, as scp does' do
       FileUtils.mkdir_p(File.join(tree, 'sub'))
       File.binwrite(File.join(tree, 'sub', 'a.txt'), 'a')
       File.symlink(File.join(tree, 'sub'), File.join(tree, 'link'))
 
       outcomes = client.upload(tree, '/opt/app/tree', [node1])
 
-      expect(put_calls.select { |call| call[:final] }.map { |call| call[:name] }).to eq(['sub/a.txt'])
-      expect(log.warnings).to include("Skipping #{File.join(tree, 'link')}, a symbolic link to a directory")
+      expect(put_calls.select { |call| call[:final] }.map { |call| call[:name] }).to contain_exactly('link/a.txt', 'sub/a.txt')
       expect(outcomes[node1]).to be_success
     end
 
-    it 'sends a link to a file as the file it points at' do
-      FileUtils.mkdir_p(tree)
-      File.binwrite(File.join(tree, 'real.txt'), 'real')
-      File.symlink(File.join(tree, 'real.txt'), File.join(tree, 'alias.txt'))
+    it 'bounds a tree whose directories link to each other' do
+      # Four sibling directories that each link to the other three. The
+      # per-branch rule alone walks every chain through them, which is 64
+      # file sends for 4 files.
+      names = ['a', 'b', 'c', 'd']
+      names.each do |name|
+        FileUtils.mkdir_p(File.join(tree, name))
+        File.binwrite(File.join(tree, name, 'payload.txt'), name)
+      end
+      names.product(names).each do |name, other|
+        next if name == other
+
+        File.symlink(File.join(tree, other), File.join(tree, name, "to_#{other}"))
+      end
 
       outcomes = client.upload(tree, '/opt/app/tree', [node1])
 
-      finals = put_calls.select { |call| call[:final] }
-      expect(finals.map { |call| [call[:name], decoded(call)] }).to contain_exactly(['alias.txt', 'real'], ['real.txt', 'real'])
+      expect(put_calls.count { |call| call[:final] }).to eq(16)
+      expect(log.once_ids).to include(a_string_starting_with('file_transfer_link_repeats_'))
+      expect(outcomes[node1]).to be_success
+    end
+
+    it 'always sends a directory reached by its own path, however many links to it sort ahead' do
+      FileUtils.mkdir_p(File.join(tree, 'shared'))
+      File.binwrite(File.join(tree, 'shared', 'config.yml'), 'shared')
+      ['alpha', 'beta', 'delta', 'epsilon', 'gamma'].each { |name| File.symlink(File.join(tree, 'shared'), File.join(tree, name)) }
+
+      outcomes = client.upload(tree, '/opt/app/tree', [node1])
+
+      sent = put_calls.select { |call| call[:final] }.map { |call| call[:name] }
+      expect(sent).to include('shared/config.yml')
+      expect(sent.length).to eq(5)
       expect(outcomes[node1]).to be_success
     end
 

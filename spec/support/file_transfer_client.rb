@@ -3,18 +3,29 @@
 require 'mcollective'
 require File.expand_path('../../files/mcollective/util/file_transfer', __dir__)
 
-# Stands in for the NATS wrapper: the publish guard prepends onto it and
-# the broker limit comes from its client's server info.
+# Stands in for the NATS wrapper: the publish hook prepends onto it, the
+# broker limit comes from its client's server info, and its stats are what
+# the library measures replies and reconnects with.
 class FakeNatsWrapper
-  attr_reader :published
+  attr_reader :published, :stats
 
   def initialize(max_payload)
     @client = Struct.new(:server_info).new({ max_payload: max_payload })
     @published = []
+    @stats = { in_bytes: 0, reconnects: 0 }
+    @on_publish = nil
+  end
+
+  # Runs on every publish with the stats hash and the number of publishes
+  # so far, so a spec can model a broker reconnect or the reply bytes the
+  # client took in during a call.
+  def on_publish(&block)
+    @on_publish = block
   end
 
   def publish(_destination, payload, _reply = nil)
     @published << payload.bytesize
+    @on_publish&.call(@stats, @published.length)
   end
 end
 
@@ -109,6 +120,8 @@ class FakeLogger
 end
 
 module FileTransferClientHelpers
+  PROBE_SESSION = MCollective::Util::FileTransfer::Rpc::PROBE_SESSION
+
   def rpc_result(sender, data = {}, statuscode: 0, statusmsg: 'OK')
     MCollective::RPC::Result.new('file_transfer', 'test', sender: sender, statuscode: statuscode, statusmsg: statusmsg, data: data)
   end
@@ -119,11 +132,11 @@ module FileTransferClientHelpers
 
   # Chunk data as the library sends it and the agent answers it.
   def encoded(bytes)
-    [bytes].pack('m0')
+    [Zlib::Deflate.deflate(bytes)].pack('m0')
   end
 
   def decoded(args)
-    args[:data].unpack1('m0')
+    Zlib::Inflate.inflate(args[:data].unpack1('m0'))
   end
 
   # The wire model the fake client publishes with: a fixed envelope plus
@@ -132,8 +145,8 @@ module FileTransferClientHelpers
     envelope + (decoded(args).bytesize * expansion).ceil
   end
 
-  # put publishes through the fake wrapper, so the guard sees the modeled
-  # wire size, then answers for every addressed identity.
+  # put publishes through the fake wrapper, so the probe and the guard see
+  # the modelled wire size, then answers for every addressed identity.
   def stub_put
     rpc.on(:put) do |args, names|
       put_calls << args.merge(identities: names)
@@ -143,7 +156,11 @@ module FileTransferClientHelpers
   end
 
   def chunks
-    put_calls
+    put_calls.reject { |call| call[:session] == PROBE_SESSION }
+  end
+
+  def probes
+    put_calls.select { |call| call[:session] == PROBE_SESSION }
   end
 
   def stub_session
@@ -157,6 +174,10 @@ module FileTransferClientHelpers
 
   def stub_mkdir
     rpc.on(:mkdir) { |_args, names| results_for(names, { created: true }) }
+  end
+
+  def stub_ping
+    rpc.on(:ping) { |_args, names| results_for(names) }
   end
 
   def local_file(name, content, mode: 0o644)

@@ -2,12 +2,13 @@
 
 require 'spec_helper'
 require 'json'
+require 'zlib'
 
 RSpec.describe 'the file_transfer DDL' do
   uuid = '0f5c1e2a-3b4d-4e6f-8a9b-0c1d2e3f4a5b'
   sha = 'a' * 64
   chunk = ['x' * 555_000].pack('m0')
-  empty_chunk = ''
+  empty_chunk = [Zlib::Deflate.deflate('')].pack('m0')
 
   let(:ddl) { RubyDDL.load('file_transfer') }
   let(:json) { JSON.parse(File.read(File.join(FILES_DIR, 'mcollective', 'agent', 'file_transfer.json'))) }

@@ -16,10 +16,10 @@ module MCollective
       end
 
       # Builds one RPC client per call from an options hash, the way an mco
-      # application does, and serializes the calls, because the publish
-      # guard keeps its limit in module state while a call runs. A caller
-      # with its own client handling, such as OpenBolt, gives the Client its
-      # own object with these two methods instead.
+      # application does, and serializes the calls, because the publish hook
+      # keeps its probe and limit in module state while a call runs. A
+      # caller with its own client handling, such as OpenBolt, gives the
+      # Client its own object with these two methods instead.
       class Connection
         # @param options [Hash] The client options, Util.default_options by default
         def initialize(options = Util.default_options)

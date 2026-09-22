@@ -2,8 +2,8 @@
 
 require 'spec_helper'
 
-# The chunk writing half of put. Verification, mode, and delivery live in
-# put_final_spec.rb.
+# The chunk writing half of put. Verification, mode, delivery, and the final
+# chunk retry live in put_final_spec.rb.
 RSpec.describe 'the file_transfer agent put action' do
   include_context 'with an agent root'
 
@@ -97,14 +97,15 @@ RSpec.describe 'the file_transfer agent put action' do
         expect(mode_of(file_path)).to eq('0600')
       end
 
-      it 'refuses a name the session already holds a file at and leaves that file alone' do
+      it 'rewrites a file the agent created at the same name, which is what a retried first chunk is' do
         run_agent('put', chunk_request(data: chunk('first attempt, longer')))
 
         reply = run_agent('put', chunk_request)
 
-        expect(reply.statuscode).to eq(1)
-        expect(reply.statusmsg).to include('File exists')
-        expect(File.binread(file_path)).to eq('first attempt, longer')
+        expect(reply.statuscode).to eq(0)
+        expect(reply.data).to eq('bytes' => 5, 'size' => 5, 'sha256' => nil)
+        expect(File.binread(file_path)).to eq('hello')
+        expect(mode_of(file_path)).to eq('0600')
       end
 
       it 'refuses a directory at the same name' do
@@ -197,7 +198,7 @@ RSpec.describe 'the file_transfer agent put action' do
     end
 
     describe 'the chunk data' do
-      it 'decodes the chunk and answers its byte count' do
+      it 'inflates the chunk and answers the decoded byte count' do
         payload = 'a line of text that repeats. ' * 40
 
         reply = run_agent('put', chunk_request(data: chunk(payload)))
@@ -216,10 +217,38 @@ RSpec.describe 'the file_transfer agent put action' do
       end
 
       it 'rejects base64 carrying a newline and creates nothing' do
-        reply = run_agent('put', chunk_request(data: "#{chunk('hello')}\n"))
+        reply = run_agent('put', chunk_request(data: "#{base64('hello')}\n"))
 
         expect(reply.statuscode).to eq(4)
         expect(reply.statusmsg).to include('The data is not valid base64')
+        expect(Dir.children(session)).to be_empty
+      end
+
+      it 'rejects data that is not zlib data and creates nothing' do
+        reply = run_agent('put', chunk_request(data: base64('hello')))
+
+        expect(reply.statuscode).to eq(4)
+        expect(reply.statusmsg).to include('The data is not valid zlib data')
+        expect(Dir.children(session)).to be_empty
+      end
+
+      it 'rejects a chunk whose zlib stream is cut short and creates nothing' do
+        truncated = Zlib::Deflate.deflate('A' * 5000)[0...-3]
+
+        reply = run_agent('put', chunk_request(data: base64(truncated)))
+
+        expect(reply.statuscode).to eq(4)
+        expect(reply.statusmsg).to include('incomplete')
+        expect(Dir.children(session)).to be_empty
+      end
+
+      it 'rejects a chunk that would inflate past 64 MiB and creates nothing' do
+        bomb = Zlib::Deflate.deflate("\0" * (70 * 1024 * 1024))
+
+        reply = run_agent('put', chunk_request(data: base64(bomb)))
+
+        expect(reply.statuscode).to eq(4)
+        expect(reply.statusmsg).to include('inflates past')
         expect(Dir.children(session)).to be_empty
       end
     end

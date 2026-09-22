@@ -7,6 +7,11 @@ module MCollective
       # node, in rounds of get across groups of nodes, each copy verified
       # against the digest the node reported before it was read.
       class Download
+        # Bounds on what a node's directory listings can make the client do,
+        # since entry names and totals come from the node.
+        TREE_DEPTH_LIMIT = 128
+        LISTING_LIMIT = 100_000
+        TREE_DIRECTORY_LIMIT = 2_000
         DOWNLOADABLE_TYPES = ['file', 'directory'].freeze
 
         def initialize(client)
@@ -31,6 +36,7 @@ module MCollective
             end
             delivered.merge!(download_trees(transfer, trees, source, destinations, staging)) unless trees.empty?
           end
+          transfer.report_reductions
           transfer.outcomes { |identity| delivered[identity] }
         end
 
@@ -118,13 +124,21 @@ module MCollective
           handles = group.to_h { |identity| [identity, File.new(File.join(staging, SecureRandom.hex(16)), 'wb')] }
           pending = group.dup
           offset = 0
-          max_bytes = transfer.sizing.reply_bytes
           begin
             while transfer.active? && !pending.empty?
               pending &= transfer.active
               break if pending.empty?
 
-              pending -= fetch_round(transfer, pending, remote, offset, max_bytes, handles)
+              unless transfer.sizing.reply_usable?
+                transfer.fail(transfer.payload_failures(pending, remote, "replies cannot shrink below #{Sizing::MINIMUM_REPLY} bytes"))
+                break
+              end
+
+              max_bytes = transfer.sizing.reply_bytes(measurable: @rpc.wrapper_stat(:in_bytes).positive?)
+              finished = fetch_round(transfer, pending, remote, offset, max_bytes, handles)
+              next if finished.nil?
+
+              pending -= finished
               pending &= transfer.active
               offset += max_bytes
               transfer.fail(overrun_failures(pending, remote, offset, expected))
@@ -141,11 +155,15 @@ module MCollective
           Outcome.failures(over, :transfer_failed) { |identity| "#{remote} on #{identity} kept sending past the #{expected[identity][:size]} bytes stat reported" }
         end
 
-        # Answers the identities that reached eof.
+        # Answers the identities that reached eof, or nil when the chunk
+        # shrank and the round has to be sent again at the same offset.
         def fetch_round(transfer, pending, remote, offset, max_bytes, handles)
+          reconnects_before = @rpc.wrapper_stat(:reconnects)
+          bytes_before = @rpc.wrapper_stat(:in_bytes)
           asked = pending.to_set
           finished = []
           write_errors = {}
+          content_bytes = 0
           started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           response = @rpc.agent_call(pending, "file_transfer.get #{remote}", timeout: @rpc.chunk_timeout(transfer)) do |client|
             collected = []
@@ -158,6 +176,7 @@ module MCollective
                 chunk = decode_reply(result[:data], max_bytes)
                 handles[identity].seek(offset)
                 handles[identity].write(chunk)
+                content_bytes += chunk.bytesize
                 finished << identity if result[:data][:eof]
                 # The chunk is on disk, so the reply need not hold it for
                 # the rest of the round.
@@ -169,20 +188,32 @@ module MCollective
             collected
           end
           transfer.record_chunk(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started)
+          transfer.sizing.record_replies(@rpc.wrapper_stat(:in_bytes) - bytes_before, content_bytes, max_bytes * pending.length)
+          cause = @rpc.blind_failure(response, pending, reconnects_before)
+          if cause
+            transfer.shrink_blind(cause, pending, reply: true)
+            return nil
+          end
+
           transfer.fail(response[:errors])
           transfer.fail(write_errors)
           finished - write_errors.keys
         end
 
-        # The content of one get reply, refused when it carries more than
-        # the request asked for, since the node decides what the reply says.
+        # The content of one get reply, held to the size the request asked
+        # for while it inflates, since the node decides what the reply says.
         def decode_reply(data, max_bytes)
           raise 'the reply carries no data' unless data.is_a?(Hash)
 
-          chunk = data[:data].to_s.unpack1('m0')
-          raise "the reply carries #{chunk.bytesize} bytes, more than the #{max_bytes} requested" if chunk.bytesize > max_bytes
-
-          chunk
+          stream = Zlib::Inflate.new
+          inflated = +''
+          stream.inflate(data[:data].to_s.unpack1('m0')) do |piece|
+            inflated << piece
+            raise "the reply inflates past the #{max_bytes} bytes requested" if inflated.bytesize > max_bytes
+          end
+          inflated
+        ensure
+          stream&.close
         end
 
         def verify_downloads(transfer, group, remote, handles, expected)
@@ -213,15 +244,34 @@ module MCollective
         def walk_remote_tree(transfer, identities, source)
           files = Hash.new { |hash, key| hash[key] = [] }
           directories = Hash.new { |hash, key| hash[key] = [] }
-          queue = [['', identities]]
+          # What each node has made the walk do so far, since a node that
+          # keeps listing subdirectories would otherwise keep the walk going.
+          listed_entries = Hash.new(0)
+          listed_directories = Hash.new(0)
+          queue = [['', identities, 0]]
           until queue.empty?
-            relative, group = queue.shift
+            relative, group, depth = queue.shift
             group &= transfer.active
             next if group.empty?
 
             remote_dir = relative.empty? ? source : File.join(source, relative)
+            if depth > TREE_DEPTH_LIMIT
+              transfer.fail(Outcome.failures(group, :transfer_failed) do |identity|
+                "#{remote_dir} on #{identity} is nested deeper than the #{TREE_DEPTH_LIMIT} directories a download follows"
+              end)
+              next
+            end
+
+            group.each { |identity| listed_directories[identity] += 1 }
+            crowded = group.select { |identity| listed_directories[identity] > TREE_DIRECTORY_LIMIT }
+            transfer.fail(Outcome.failures(crowded, :transfer_failed) do |identity|
+              "#{source} on #{identity} holds more than the #{TREE_DIRECTORY_LIMIT} directories a download follows"
+            end)
+            group -= crowded
+            next if group.empty?
+
             subdirectories = Hash.new { |hash, key| hash[key] = [] }
-            list_remote(transfer, group, remote_dir).each do |identity, entries|
+            list_remote(transfer, group, remote_dir, listed_entries).each do |identity, entries|
               odd = entries.find { |entry| !plain_name?(entry[:name]) }
               if odd
                 transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
@@ -241,7 +291,7 @@ module MCollective
                 end
               end
             end
-            subdirectories.each { |child, subgroup| queue.push([child, subgroup]) }
+            subdirectories.each { |child, subgroup| queue.push([child, subgroup, depth + 1]) }
           end
           [directories, files]
         end
@@ -317,7 +367,9 @@ module MCollective
 
         # Every entry of a remote directory per node, paging through list
         # with a cursor per node, since each node's pages are its own.
-        def list_remote(transfer, group, remote_dir)
+        # listed_entries counts what each node has listed across the whole
+        # tree, so the bound holds over the walk and not per directory.
+        def list_remote(transfer, group, remote_dir, listed_entries)
           listed = group.to_h { |identity| [identity, []] }
           offsets = group.to_h { |identity| [identity, 0] }
           pending = group.dup
@@ -334,8 +386,14 @@ module MCollective
                   pending -= [identity]
                   next
                 end
+                if listed_entries[identity] + entries.length > LISTING_LIMIT
+                  transfer.fail(identity => Outcome.failure(identity, :transfer_failed, "The tree on #{identity} lists more than #{LISTING_LIMIT} entries"))
+                  pending -= [identity]
+                  next
+                end
 
                 listed[identity].concat(entries)
+                listed_entries[identity] += entries.length
                 offsets[identity] += entries.length
                 pending -= [identity] if entries.empty? || offsets[identity] >= data[:total]
               end

@@ -63,13 +63,17 @@ module AgentRunner
     File.join(plugin_dir, 'file_transfer')
   end
 
-  # Chunk data as put carries it and get answers it.
-  def chunk(bytes)
+  def base64(bytes)
     [bytes].pack('m0')
   end
 
-  def decoded(reply)
-    reply.data['data'].unpack1('m0')
+  # Chunk data as put carries it and get answers it.
+  def chunk(bytes)
+    base64(Zlib::Deflate.deflate(bytes))
+  end
+
+  def inflated(reply)
+    Zlib::Inflate.inflate(reply.data['data'].unpack1('m0'))
   end
 
   def sha256(bytes)

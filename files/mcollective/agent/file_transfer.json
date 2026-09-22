@@ -61,7 +61,7 @@
       },
       "output": {
         "data": {
-          "description": "The chunk, base64 encoded",
+          "description": "The chunk, zlib deflated then base64 encoded",
           "display_as": "Data",
           "type": "string"
         },
@@ -209,7 +209,7 @@
         },
         "data": {
           "prompt": "Data",
-          "description": "The chunk, base64 encoded",
+          "description": "The chunk, zlib deflated then base64 encoded",
           "type": "string",
           "validation": "\\A[A-Za-z0-9+/]*={0,2}\\z",
           "maxlength": 67108864,

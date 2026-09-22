@@ -53,7 +53,7 @@ action "get", :description => "Read a chunk of a file as base64" do
          :display_as  => "Bytes"
 
   output :data,
-         :description => "The chunk, base64 encoded",
+         :description => "The chunk, zlib deflated then base64 encoded",
          :type        => "string",
          :display_as  => "Data"
 
@@ -155,7 +155,7 @@ action "put", :description => "Write a chunk of a file inside a session, verifyi
 
   input :data,
         :prompt      => "Data",
-        :description => "The chunk, base64 encoded",
+        :description => "The chunk, zlib deflated then base64 encoded",
         :type        => :string,
         :validation  => '\A[A-Za-z0-9+/]*={0,2}\z',
         :maxlength   => 67108864,

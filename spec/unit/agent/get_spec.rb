@@ -22,14 +22,14 @@ RSpec.describe 'the file_transfer agent get action' do
 
     expect(reply.statuscode).to eq(0)
     expect(reply.statusmsg).to eq('OK')
-    expect(decoded(reply)).to eq(content)
+    expect(inflated(reply)).to eq(content)
     expect(reply.data).to include('bytes' => 100, 'eof' => true, 'size' => 100)
   end
 
   it 'reads max_bytes from the start of the file' do
     reply = run_agent('get', { path: source, offset: 0, max_bytes: 10 })
 
-    expect(decoded(reply)).to eq('a' * 10)
+    expect(inflated(reply)).to eq('a' * 10)
     expect(reply.data).to include('bytes' => 10, 'eof' => false, 'size' => 100)
   end
 
@@ -37,28 +37,28 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: source, offset: 0, max_bytes: 2**62 })
 
     expect(reply.statuscode).to eq(0)
-    expect(decoded(reply)).to eq(content)
+    expect(inflated(reply)).to eq(content)
     expect(reply.data).to include('bytes' => 100, 'eof' => true)
   end
 
   it 'reads max_bytes from the offset it is given' do
     reply = run_agent('get', { path: source, offset: 40, max_bytes: 10 })
 
-    expect(decoded(reply)).to eq('e' * 10)
+    expect(inflated(reply)).to eq('e' * 10)
     expect(reply.data).to include('bytes' => 10, 'eof' => false, 'size' => 100)
   end
 
   it 'reports eof true for the chunk that ends exactly at the end of the file' do
     reply = run_agent('get', { path: source, offset: 90, max_bytes: 10 })
 
-    expect(decoded(reply)).to eq('j' * 10)
+    expect(inflated(reply)).to eq('j' * 10)
     expect(reply.data).to include('bytes' => 10, 'eof' => true, 'size' => 100)
   end
 
   it 'answers only the bytes that remain when max_bytes runs past the end of the file' do
     reply = run_agent('get', { path: source, offset: 90, max_bytes: 1000 })
 
-    expect(decoded(reply)).to eq('j' * 10)
+    expect(inflated(reply)).to eq('j' * 10)
     expect(reply.data).to include('bytes' => 10, 'eof' => true, 'size' => 100)
   end
 
@@ -66,7 +66,7 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: source, offset: 100, max_bytes: 10 })
 
     expect(reply.statuscode).to eq(0)
-    expect(decoded(reply)).to eq('')
+    expect(inflated(reply)).to eq('')
     expect(reply.data).to include('bytes' => 0, 'eof' => true, 'size' => 100)
   end
 
@@ -74,7 +74,7 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: source, offset: 500, max_bytes: 10 })
 
     expect(reply.statuscode).to eq(0)
-    expect(decoded(reply)).to eq('')
+    expect(inflated(reply)).to eq('')
     expect(reply.data).to include('bytes' => 0, 'eof' => true, 'size' => 100)
   end
 
@@ -82,7 +82,7 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: source, offset: 0, max_bytes: 0 })
 
     expect(reply.statuscode).to eq(0)
-    expect(decoded(reply)).to eq('')
+    expect(inflated(reply)).to eq('')
     expect(reply.data).to include('bytes' => 0, 'eof' => false, 'size' => 100)
   end
 
@@ -90,7 +90,7 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: source, offset: 100, max_bytes: 0 })
 
     expect(reply.statuscode).to eq(0)
-    expect(decoded(reply)).to eq('')
+    expect(inflated(reply)).to eq('')
     expect(reply.data).to include('bytes' => 0, 'eof' => true, 'size' => 100)
   end
 
@@ -101,7 +101,7 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: path, offset: 0, max_bytes: 1000 })
 
     expect(reply.statuscode).to eq(0)
-    expect(decoded(reply)).to eq('')
+    expect(inflated(reply)).to eq('')
     expect(reply.data).to include('bytes' => 0, 'eof' => true, 'size' => 0)
   end
 
@@ -112,8 +112,31 @@ RSpec.describe 'the file_transfer agent get action' do
 
     reply = run_agent('get', { path: path, offset: 0, max_bytes: 1000 })
 
-    expect(decoded(reply)).to eq(every_byte)
+    expect(inflated(reply)).to eq(every_byte)
     expect(reply.data).to include('bytes' => 256, 'eof' => true, 'size' => 256)
+  end
+
+  it 'sends the chunk zlib deflated, so repetitive content costs a fraction of its size' do
+    path = File.join(work, 'repetitive.bin')
+    repetitive = 'A' * 5000
+    File.binwrite(path, repetitive)
+
+    reply = run_agent('get', { path: path, offset: 0, max_bytes: 5000 })
+
+    expect(reply.data).to include('bytes' => 5000, 'eof' => true, 'size' => 5000)
+    expect(inflated(reply)).to eq(repetitive)
+    expect(reply.data['data'].length).to be < base64(repetitive).length / 10
+  end
+
+  it 'round trips incompressible content through the same deflate' do
+    path = File.join(work, 'random.bin')
+    random = SecureRandom.bytes(4096)
+    File.binwrite(path, random)
+
+    reply = run_agent('get', { path: path, offset: 0, max_bytes: 4096 })
+
+    expect(reply.data).to include('bytes' => 4096, 'eof' => true, 'size' => 4096)
+    expect(inflated(reply)).to eq(random)
   end
 
   it 'reports eof false for a chunk that does not reach the end of the file' do
@@ -123,7 +146,7 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: path, offset: 1000, max_bytes: 1000 })
 
     expect(reply.data).to include('bytes' => 1000, 'eof' => false, 'size' => 5000)
-    expect(decoded(reply)).to eq('A' * 1000)
+    expect(inflated(reply)).to eq('A' * 1000)
   end
 
   it 'follows a symbolic link to a file' do
@@ -133,7 +156,7 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: link, offset: 0, max_bytes: 1000 })
 
     expect(reply.statuscode).to eq(0)
-    expect(decoded(reply)).to eq(content)
+    expect(inflated(reply)).to eq(content)
     expect(reply.data).to include('bytes' => 100, 'eof' => true, 'size' => 100)
   end
 
@@ -144,7 +167,7 @@ RSpec.describe 'the file_transfer agent get action' do
     reply = run_agent('get', { path: path, offset: 0, max_bytes: 1000 })
 
     expect(reply.statuscode).to eq(0)
-    expect(decoded(reply)).to eq(content)
+    expect(inflated(reply)).to eq(content)
   end
 
   it 'leaves the file it reads untouched' do

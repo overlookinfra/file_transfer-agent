@@ -21,7 +21,10 @@ RSpec.describe MCollective::Util::FileTransfer::PublishHook do
 
   before { described_class.install(wrapper_class) }
 
-  after { described_class.limit = nil }
+  after do
+    described_class.probing = false
+    described_class.limit = nil
+  end
 
   it 'installs once' do
     described_class.install(wrapper_class)
@@ -29,17 +32,28 @@ RSpec.describe MCollective::Util::FileTransfer::PublishHook do
     expect(wrapper_class.ancestors.count(described_class)).to eq(1)
   end
 
-  it 'passes a message through when no limit is set' do
+  it 'passes a message through when neither probing nor limited' do
     wrapper.publish('subject', 'payload')
 
     expect(wrapper.sent).to eq(['payload'])
   end
 
-  it 'refuses a message over the limit before it is sent, naming both sizes' do
+  it 'records the size while probing and abandons the send' do
+    described_class.probing = true
+
+    expect { wrapper.publish('subject', 'x' * 123) }.to raise_error(MCollective::Util::FileTransfer::ProbeCaptured)
+    expect(described_class.probed_size).to eq(123)
+    expect(wrapper.sent).to be_empty
+  end
+
+  it 'refuses a message over the limit before it is sent, naming the overshoot' do
     described_class.limit = 100
 
-    expect { wrapper.publish('subject', 'x' * 130) }
-      .to raise_error(MCollective::Util::FileTransfer::PayloadTooLarge, "a 130 byte message exceeds the broker's 100 byte payload limit")
+    expect { wrapper.publish('subject', 'x' * 130) }.to raise_error(MCollective::Util::FileTransfer::PayloadTooLarge) { |error|
+      expect(error.size).to eq(130)
+      expect(error.limit).to eq(100)
+      expect(error.overshoot).to eq(30)
+    }
     expect(wrapper.sent).to be_empty
   end
 

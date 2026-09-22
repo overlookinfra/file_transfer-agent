@@ -19,6 +19,7 @@ require 'find'
 require 'json'
 require 'securerandom'
 require 'tmpdir'
+require 'zlib'
 
 module FileTransfer
   ACTIVATION_PROTOCOL = 'io.choria.mcorpc.external.v1.activation_request'
@@ -31,13 +32,14 @@ module FileTransfer
   DEFAULT_STALE_AFTER = 86_400 # 24 hours
   LIST_DEFAULT_LIMIT = 1000
   LIST_MAX_LIMIT = 2000
-  # The most one get reply may hold, 64 MiB. A process handles one request
-  # and the caller sizes chunks to the broker's limit, so no honest request
-  # comes near this. It exists because a caller is not trusted to be sane,
-  # and a get asking for an absurd max_bytes would otherwise read a whole
-  # file into memory. put's data is bounded by the DDL's maxlength, the same
-  # number, since the server only runs a regex on an input whose maxlength
-  # is non-zero.
+  # The most one chunk may hold once decoded, 64 MiB. A process handles one
+  # request and so one chunk, and the caller sizes chunks to the broker's
+  # limit, so no honest chunk comes near this. It exists because a caller is
+  # not trusted to be sane: a get asking for an absurd max_bytes would read a
+  # whole file into memory, and deflate packs 1 GB of one repeated byte into
+  # under 1 MiB, so a put that fits the wire could inflate without bound.
+  # The DDL gives put's data the same number as its maxlength, since the
+  # server only runs a regex on an input whose maxlength is non-zero.
   MAX_CHUNK_BYTES = 67_108_864
   READ_BLOCK = 65_536
 
@@ -137,6 +139,17 @@ module FileTransfer
 
       content = decode_chunk(string_input('data'))
       path = File.join(session, name)
+      # A final chunk with a destination is the one request that moves the
+      # session file away, so when such a chunk arrives and the session file
+      # is already gone, an earlier copy of it may have delivered the file
+      # and lost its reply. Then the destination itself says whether the
+      # delivery happened, and the request is answered from there, because
+      # opening the missing session file below would report a lost chunk.
+      if offset.positive? && final && destination && !File.exist?(path)
+        delivered = delivered_size(destination, digest, mode)
+        return { 'bytes' => content.bytesize, 'size' => delivered, 'sha256' => digest } if delivered
+      end
+
       # The first chunk creates the session file, every later chunk opens
       # it and must find the chunks before it already there.
       file = offset.zero? ? create_session_file(session, name) : open_session_file(session, name, offset)
@@ -184,7 +197,7 @@ module FileTransfer
         [file.stat, file.read(max_bytes) || '']
       end
 
-      { 'data' => [content].pack('m0'), 'bytes' => content.bytesize,
+      { 'data' => [Zlib::Deflate.deflate(content)].pack('m0'), 'bytes' => content.bytesize,
         'eof' => offset + content.bytesize >= stat.size, 'size' => stat.size }
     end
 
@@ -359,10 +372,14 @@ module FileTransfer
       path
     end
 
-    # A first chunk is an exclusive create, since a name is put once per
-    # session.
+    # A first chunk is an exclusive create. When the name is already taken,
+    # the chunk is a retry whose reply was lost, and the file is rewritten
+    # from the start.
     def create_session_file(session, name)
-      File.new(session_file_path(session, name), File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW | File::BINARY, 0o600)
+      path = session_file_path(session, name)
+      File.new(path, File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW | File::BINARY, 0o600)
+    rescue Errno::EEXIST
+      File.new(path, File::RDWR | File::NOFOLLOW | File::BINARY).tap { |reused| reused.truncate(0) }
     end
 
     def open_session_file(session, name, offset)
@@ -377,11 +394,25 @@ module FileTransfer
       File.new(path, File::RDWR | File::NOFOLLOW | File::BINARY)
     end
 
-    # Chunk data travels base64 encoded in both directions.
+    # Chunk data travels base64 encoded and zlib deflated in both directions.
     def decode_chunk(data)
-      data.unpack1('m0')
+      content = data.unpack1('m0')
+      inflated = +''
+      stream = Zlib::Inflate.new
+      begin
+        stream.inflate(content) do |block|
+          inflated << block
+          raise Failure.new(INVALID_DATA, "The data inflates past #{MAX_CHUNK_BYTES} bytes") if inflated.bytesize > MAX_CHUNK_BYTES
+        end
+        raise Failure.new(INVALID_DATA, 'The data is not valid zlib data: the stream is incomplete') unless stream.finished?
+      ensure
+        stream.close
+      end
+      inflated
     rescue ArgumentError
       raise Failure.new(INVALID_DATA, 'The data is not valid base64')
+    rescue Zlib::Error => e
+      raise Failure.new(INVALID_DATA, "The data is not valid zlib data: #{e.message}")
     end
 
     def digest_of(file)
@@ -402,6 +433,25 @@ module FileTransfer
 
         yield(file)
       end
+    end
+
+    # A final chunk whose reply was lost. The destination already holds the
+    # verified file when it is a regular file with the expected digest, read
+    # through one handle. The mode is applied again in case the lost reply
+    # came first. Anything else answers nil and the ordinary path reports a
+    # lost chunk.
+    #
+    # @return [Integer, nil] The delivered file's size, or nil
+    def delivered_size(destination, digest, mode)
+      File.open(destination, File::RDONLY | File::NONBLOCK | File::NOFOLLOW | File::BINARY) do |file|
+        stat = file.stat
+        return nil unless stat.file? && digest_of(file) == digest
+
+        file.chmod(mode) if mode
+        stat.size
+      end
+    rescue SystemCallError
+      nil
     end
 
     def deliver(path, destination, mode)

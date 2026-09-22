@@ -4,14 +4,16 @@ module MCollective
   module Util
     module FileTransfer
       # The RPC calls of a transfer, the timeouts they run under, and the
-      # broker's limit on what they may carry. Every call answers a response
-      # hash with the replies by identity under :responded, the failures by
-      # identity under :errors as Outcomes, and :rpc_failed when the whole
-      # call raised.
+      # sizing of its requests through the connection they go out on. Every
+      # call answers a response hash with the replies by identity under
+      # :responded, the failures by identity under :errors as Outcomes, and
+      # :rpc_failed when the whole call raised.
       class Rpc
+        LIVENESS_TIMEOUT = 5
         MIN_CHUNK_TIMEOUT = 5
         CHUNK_TIMEOUT_FACTOR = 3
         BYTES_PER_EXTRA_SECOND = 100_000_000
+        PROBE_SESSION = '00000000-0000-4000-8000-000000000000'
 
         attr_reader :rpc_timeout
 
@@ -74,28 +76,30 @@ module MCollective
           empty_response.merge(errors: errors, rpc_failed: true)
         end
 
-        # The broker's advertised payload limit, or the default with a
-        # warning when the connector does not expose one.
-        def max_payload
-          client = @connection.nats_wrapper&.instance_variable_get(:@client)
-          limit = client.server_info[:max_payload] if client.respond_to?(:server_info) && client.server_info.is_a?(Hash)
-          return limit if limit.is_a?(Integer) && limit.positive?
+        # Whether a call that brought no reply failed for a reason the guard
+        # cannot see. Silent nodes are pinged first, so a dead node is a
+        # plain no_response failure rather than a reason to shrink.
+        def blind_failure(response, identities, reconnects_before)
+          return nil if identities.empty?
+          return nil unless response[:responded].empty?
 
-          @logger.warn_once('file_transfer_max_payload_unknown',
-            "The file transfer client could not read the broker's message size limit and assumes #{Sizing::DEFAULT_MAX_PAYLOAD} bytes")
-          Sizing::DEFAULT_MAX_PAYLOAD
+          lost = response[:rpc_failed] || response[:errors].values.all? { |outcome| outcome.kind == :no_response }
+          return nil unless lost
+          return :reconnect if wrapper_stat(:reconnects) > reconnects_before
+          return nil if response[:rpc_failed]
+
+          alive = request('rpcutil', identities, 'rpcutil.ping', timeout: LIVENESS_TIMEOUT, publish_timeout: nil, &:ping)
+          alive[:responded].empty? ? nil : :silent
         end
 
-        # Runs the block with the publish guard set to the limit, so a
-        # message over it raises PayloadTooLarge before it leaves the client
-        # instead of making the broker close the connection.
-        def guarding(limit)
+        # One counter of the NATS wrapper, in_bytes or reconnects, or 0 when
+        # the connector keeps none.
+        def wrapper_stat(key)
           wrapper = @connection.nats_wrapper
-          PublishHook.install(wrapper.class) if wrapper.class.method_defined?(:publish)
-          PublishHook.limit = limit
-          yield
-        ensure
-          PublishHook.limit = nil
+          stats = wrapper.respond_to?(:stats) ? wrapper.stats : nil
+          stats.is_a?(Hash) ? stats.fetch(key, 0).to_i : 0
+        rescue StandardError
+          0
         end
 
         # Three times the slowest chunk so far, at least MIN_CHUNK_TIMEOUT,
@@ -111,6 +115,32 @@ module MCollective
         # timeout unless the rpc timeout is itself above that.
         def final_timeout(size)
           (@rpc_timeout + (size / BYTES_PER_EXTRA_SECOND)).clamp(@rpc_timeout, [DDL_TIMEOUT, @rpc_timeout].max)
+        end
+
+        # Sizes chunks from the broker's advertised limit and two
+        # serializations of a put through the real client, captured at the
+        # NATS wrapper without sending. The probes carry an empty chunk and
+        # an incompressible one, encoded exactly as a chunk is, so the
+        # expansion they measure includes what deflate adds.
+        def chunk_sizing(identities, chunk_size)
+          wrapper = @connection.nats_wrapper
+          sizing = Sizing.new(max_payload: advertised_max_payload(wrapper), chunk_size: chunk_size)
+          empty = full = nil
+          if wrapper.class.method_defined?(:publish)
+            PublishHook.install(wrapper.class)
+            empty = probe_size(identities, FileTransfer.encode_chunk(''))
+            full = probe_size(identities, FileTransfer.encode_chunk(SecureRandom.random_bytes(Sizing::PROBE_BYTES)))
+          end
+          if empty && full && full > empty
+            sizing.calibrate(envelope: empty, expansion: (full - empty).to_f / Sizing::PROBE_BYTES)
+          else
+            @logger.warn_once('file_transfer_sizing_fallback',
+              'The file transfer client could not measure the size of its own requests, so chunks are sized from a ' \
+              'conservative estimate. Lower the chunk size if transfers report oversized messages.')
+            sizing.fallback
+          end
+          @logger.debug("File transfer with #{FileTransfer.count(identities)} uses #{sizing.summary}")
+          sizing
         end
 
         private
@@ -132,6 +162,37 @@ module MCollective
             end
           end
           by_sender
+        end
+
+        def advertised_max_payload(wrapper)
+          client = wrapper&.instance_variable_get(:@client)
+          limit = client.server_info[:max_payload] if client.respond_to?(:server_info) && client.server_info.is_a?(Hash)
+          return limit if limit.is_a?(Integer) && limit.positive?
+
+          @logger.warn_once('file_transfer_max_payload_unknown',
+            "The file transfer client could not read the broker's message size limit and assumes #{Sizing::DEFAULT_MAX_PAYLOAD} bytes")
+          Sizing::DEFAULT_MAX_PAYLOAD
+        end
+
+        # One put through the real client with the probe set, so the wire
+        # size of this transfer's requests is seen and nothing is sent.
+        # Answers nil when the probe could not run.
+        def probe_size(identities, data)
+          @connection.with_client(AGENT, identities, timeout: @rpc_timeout, publish_timeout: @rpc_timeout) do |client|
+            PublishHook.probed_size = nil
+            PublishHook.probing = true
+            begin
+              client.put(session: PROBE_SESSION, name: 'probe', offset: 0, data: data)
+            rescue ProbeCaptured
+              nil
+            ensure
+              PublishHook.probing = false
+            end
+          end
+          PublishHook.probed_size
+        rescue StandardError => e
+          @logger.debug("The chunk sizing probe failed: #{e.class}: #{e.message}")
+          nil
         end
 
         def empty_response

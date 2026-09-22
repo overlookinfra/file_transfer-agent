@@ -21,7 +21,7 @@ RSpec.describe MCollective::Util::FileTransfer::Session do
       expect(session.active).to eq(nodes)
       expect(session.paths).to eq(node1 => "/tmp/file_transfer-#{session.id}", node2 => "/tmp/file_transfer-#{session.id}")
       expect(session.failures).to be_empty
-      expect(rpc.calls.map(&:first)).to eq([:mktemp])
+      expect(rpc.calls.map(&:first)).to eq([:put, :put, :mktemp])
     end
 
     it 'drops a node whose mktemp failed into the failures and keeps the rest' do
@@ -177,6 +177,21 @@ RSpec.describe MCollective::Util::FileTransfer::Session do
       session.cleanup
 
       expect(log.warnings).to include(a_string_including("Cleanup of session #{session.id} on #{node1} failed", 'Permission denied'))
+    end
+
+    it 'reports the chunk reductions the session saw' do
+      attempts = 0
+      stub_put do |_args, names|
+        attempts += 1
+        attempts == 1 ? [] : results_for(names)
+      end
+      stub_ping
+      session = client.open_session(nodes)
+      session.put(task_file, 'task.sh')
+
+      session.cleanup
+
+      expect(log.warnings).to include('File transfer chunk reductions this run: silent 1')
     end
   end
 end

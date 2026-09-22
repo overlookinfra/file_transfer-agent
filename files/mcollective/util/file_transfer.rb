@@ -4,6 +4,7 @@ require 'digest/sha2'
 require 'fileutils'
 require 'securerandom'
 require 'tmpdir'
+require 'zlib'
 require_relative 'file_transfer/default_logger'
 require_relative 'file_transfer/connection'
 require_relative 'file_transfer/sizing'
@@ -51,6 +52,11 @@ module MCollective
         def success?
           kind.nil?
         end
+      end
+
+      # Chunk data as put carries it and get answers it.
+      def self.encode_chunk(bytes)
+        [Zlib::Deflate.deflate(bytes)].pack('m0')
       end
 
       # A count of nodes for a log line.

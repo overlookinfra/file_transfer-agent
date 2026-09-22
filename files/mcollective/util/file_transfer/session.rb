@@ -70,8 +70,9 @@ module MCollective
         end
 
         # Removes the session on every node in its paths whose cleanup
-        # option is on.
+        # option is on, after reporting the transfer's chunk reductions.
         def cleanup
+          @transfer.report_reductions
           to_clean, to_keep = @paths.keys.partition { |identity| @client.cleanup?(identity) }
           to_keep.each do |identity|
             @client.logger.warn("Leaving session #{@id} on #{identity}, the file_transfer agent sweeps it after its stale_after setting")
