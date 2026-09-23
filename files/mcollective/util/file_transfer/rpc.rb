@@ -143,10 +143,17 @@ module MCollective
           (transfer.slowest_chunk * CHUNK_TIMEOUT_FACTOR).ceil.clamp(MIN_CHUNK_TIMEOUT, @rpc_timeout)
         end
 
+        # The agent's DDL timeout, the longest a node runs one action before
+        # its server stops waiting and answers nothing, read from the DDL
+        # the client loads.
+        def ddl_timeout
+          @ddl_timeout ||= DDL.new(AGENT).meta[:timeout]
+        end
+
         # The rpc timeout plus a second per 100 MB of file, capped at the DDL
         # timeout unless the rpc timeout is itself above that.
         def final_timeout(size)
-          (@rpc_timeout + (size / BYTES_PER_EXTRA_SECOND)).clamp(@rpc_timeout, [DDL_TIMEOUT, @rpc_timeout].max)
+          (@rpc_timeout + (size / BYTES_PER_EXTRA_SECOND)).clamp(@rpc_timeout, [ddl_timeout, @rpc_timeout].max)
         end
 
         private

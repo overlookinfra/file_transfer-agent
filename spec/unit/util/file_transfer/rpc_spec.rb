@@ -130,4 +130,9 @@ RSpec.describe MCollective::Util::FileTransfer::Rpc do
 
     expect(rpc.batch_size).to be_nil
   end
+
+  it 'caps the final chunk timeout at the timeout the DDL declares' do
+    expect(client.rpc.final_timeout(1_000_000_000)).to eq(40)
+    expect(client.rpc.final_timeout(20_000_000_000)).to eq(120)
+  end
 end

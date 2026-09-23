@@ -195,9 +195,13 @@ RSpec.shared_context 'with a file transfer client' do
   let(:workdir) { Dir.mktmpdir('file_transfer-client') }
 
   # The sizing measures requests through this, with the wire model the
-  # fake wrapper publishes with, so the fit and the guard agree.
+  # fake wrapper publishes with, so the fit and the guard agree, and the
+  # agent's DDL answers a 120 second timeout as the shipped one does. RPC
+  # results look their action up in the same DDL, and find no interface.
   before do
     allow(MCollective::Util::FileTransfer).to receive(:request_bytes) { |_client, _action, args, _identity| wire_size(args) }
+    allow(MCollective::DDL).to receive(:new).with(MCollective::Util::FileTransfer::AGENT)
+                                            .and_return(instance_double(MCollective::DDL::AgentDDL, meta: { timeout: 120 }, action_interface: {}))
   end
 
   after { FileUtils.remove_entry_secure(workdir) }

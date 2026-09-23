@@ -78,6 +78,20 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(get_calls.map { |call| call[:identities] }).to eq([nodes])
   end
 
+  context 'with an rpc timeout above the timeout the DDL declares' do
+    let(:client_options) { { rpc_timeout: 300 } }
+
+    it 'waits no longer than the DDL timeout for stat, which digests the whole file on the node' do
+      stub_file_stats
+      stub_get
+
+      client.download('/var/log/app.log', destinations)
+
+      expect(action_calls.first).to include(timeout: 120)
+      expect(action_calls.last).to include(timeout: 300)
+    end
+  end
+
   it 'creates no session for a download' do
     stub_file_stats
     stub_get

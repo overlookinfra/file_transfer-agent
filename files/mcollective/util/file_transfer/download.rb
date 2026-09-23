@@ -38,7 +38,7 @@ module MCollective
         # on the node. Files and directories continue, anything else is a
         # failure for that node.
         def describe_sources(transfer, identities, source)
-          response = @rpc.agent_call(identities, "file_transfer.stat #{source}", timeout: [@rpc.rpc_timeout, DDL_TIMEOUT].min) do |client|
+          response = @rpc.agent_call(identities, "file_transfer.stat #{source}", timeout: [@rpc.rpc_timeout, @rpc.ddl_timeout].min) do |client|
             client.stat(path: source, checksum: true)
           end
           transfer.fail(response[:errors])

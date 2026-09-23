@@ -46,10 +46,12 @@ RSpec.describe 'the file_transfer DDL' do
     expect(ddl.meta[:provider]).to eq('external')
   end
 
-  it 'declares the same version and timeout in both forms, and the client library caps its waits at that timeout' do
+  it 'declares the same version and timeout in both forms, and the client library takes its timeout from the DDL' do
     expect(ddl.meta[:version]).to eq(json['metadata']['version'])
     expect(ddl.meta[:timeout]).to eq(json['metadata']['timeout'])
-    expect(MCollective::Util::FileTransfer::DDL_TIMEOUT).to eq(json['metadata']['timeout'])
+
+    allow(MCollective::DDL).to receive(:new).with('file_transfer').and_return(ddl)
+    expect(MCollective::Util::FileTransfer::Rpc.new(nil, nil, 30).ddl_timeout).to eq(json['metadata']['timeout'])
   end
 
   it 'anchors every validation regex and never starts one with a lowercase letter, which the server reads as a validator name' do

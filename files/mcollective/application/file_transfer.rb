@@ -22,19 +22,19 @@ module MCollective
       option :chunk_size,
         arguments: ['--chunk-size BYTES'],
         description: 'Upper bound on the bytes of file content per request. Without it, the chunk is the most content ' \
-                     'whose request, measured as it would be sent, fits the broker message size limit less a five ' \
+                     'whose request, measured as it would be sent, fits the broker message size limit minus a five ' \
                      'percent reserve. Set it lower when that limit could not be read and is below the assumed 1 MiB.',
         type: Integer
 
       option :upload_batch_size,
         arguments: ['--upload-batch-size NODES'],
-        description: 'How many nodes one chunk request is published to at once. Without it, as many as keep one ' \
-                     'batch of requests under 256 MiB in memory on this host at the broker message size limit.',
+        description: 'How many nodes one chunk request is published to at once. Without it, the size is chosen to keep one ' \
+                     'batch of requests under 256 MiB of memory on this host at the broker message size limit.',
         type: Integer
 
       option :download_batch_size,
         arguments: ['--download-batch-size NODES'],
-        description: 'How many nodes a download fetches from at once. Without it, as many as keep one round of ' \
+        description: 'How many nodes a download fetches from at once. Without it, the size is chosen to keep one batch of ' \
                      'replies under three quarters of the 64 MiB the broker holds for this host before closing ' \
                      'its connection.',
         type: Integer
@@ -73,7 +73,8 @@ module MCollective
       end
 
       # The codes of mco commands: 0 when every node succeeded, 2 when any
-      # failed, 3 when no node responded, and 1 above when none matched.
+      # failed, 3 when no node responded, and 1 above when none matched, which
+      # is already handled by main().
       def exit_code(outcomes)
         return 0 if outcomes.values.all?(&:success?)
         return 3 if outcomes.values.all? { |outcome| outcome.kind == :no_response }
@@ -81,7 +82,6 @@ module MCollective
         2
       end
 
-      # The library defaults stand for the sizes the command line left out.
       def client_settings
         { connection: Util::FileTransfer::Connection.new(options), rpc_timeout: options[:timeout], cleanup: !configuration[:keep_session],
           **configuration.slice(:chunk_size, :upload_batch_size, :download_batch_size).compact }

@@ -26,8 +26,6 @@ module MCollective
     module FileTransfer
       VERSION = '1.0.0'
       AGENT = 'file_transfer'
-      # The agent's DDL timeout, the longest a node runs one action.
-      DDL_TIMEOUT = 120
 
       OUTCOME_KINDS = [:no_response, :rpc_error, :rpc_failed, :transfer_failed, :payload_too_large, :checksum_mismatch].freeze
       # A name Windows treats as a device rather than a file, with or
@@ -47,8 +45,6 @@ module MCollective
           new(identity: identity, path: nil, kind: kind, message: message)
         end
 
-        # One failure per identity, each with the message the block answers
-        # for it.
         def self.failures(identities, kind)
           identities.to_h { |identity| [identity, failure(identity, kind, yield(identity))] }
         end
@@ -72,11 +68,11 @@ module MCollective
         # @param rpc_timeout [Numeric] Seconds to wait for every node's reply to one call, and to
         #   publish one call to every node
         # @param chunk_size [Integer, nil] The most file content one request carries, or nil to let
-        #   the broker's limit alone decide
+        #   the sizing calculation decide
         # @param upload_batch_size [Integer, nil] How many nodes one chunk request is published to
-        #   at once, or nil for as many as keep a batch under Transfer::UPLOAD_BATCH_BYTES
+        #   at once, or nil for as many as we can to keep a batch under Transfer::UPLOAD_BATCH_BYTES
         # @param download_batch_size [Integer, nil] How many nodes one download round asks at once,
-        #   or nil for as many as keep one round of replies under the broker's connection backlog
+        #   or nil for as many as we can to keep one round of replies under the broker's connection backlog
         # @param cleanup [Boolean, Hash{String => Boolean}] Whether sessions are removed
         #   afterwards, for every node or per identity
         def initialize(connection:, logger: DefaultLogger.new, rpc_timeout: 30, chunk_size: nil,
