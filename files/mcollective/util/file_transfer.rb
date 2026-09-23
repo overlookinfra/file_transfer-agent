@@ -65,7 +65,7 @@ module MCollective
       end
 
       class Client
-        attr_reader :rpc, :logger, :chunk_size, :download_group_size
+        attr_reader :rpc, :logger, :chunk_size, :upload_batch_size, :download_group_size
 
         # @param connection [#with_client, #nats_wrapper] Builds the RPC clients, see Connection
         # @param logger [#debug, #warn, #warn_once] Receives the log lines, see DefaultLogger
@@ -73,14 +73,17 @@ module MCollective
         #   publish one call to every node
         # @param chunk_size [Integer, nil] The most file content one request carries, or nil to let
         #   the broker's limit alone decide
+        # @param upload_batch_size [Integer, nil] How many nodes one chunk request is published to
+        #   at once, or nil for as many as keep a batch under Transfer::UPLOAD_BATCH_BYTES
         # @param download_group_size [Integer] How many nodes one download round asks at once
         # @param cleanup [Boolean, Hash{String => Boolean}] Whether sessions are removed
         #   afterwards, for every node or per identity
         def initialize(connection:, logger: DefaultLogger.new, rpc_timeout: 30, chunk_size: nil,
-                       download_group_size: 32, cleanup: true)
+                       upload_batch_size: nil, download_group_size: 32, cleanup: true)
           @rpc = Rpc.new(connection, logger, rpc_timeout)
           @logger = logger
           @chunk_size = chunk_size
+          @upload_batch_size = upload_batch_size
           @download_group_size = download_group_size
           @cleanup = cleanup
         end

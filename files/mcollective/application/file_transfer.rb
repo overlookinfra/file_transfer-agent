@@ -23,7 +23,13 @@ module MCollective
         arguments: ['--chunk-size BYTES'],
         description: 'Upper bound on the bytes of file content per request. Without it, the chunk is what the library ' \
                      'computes from the broker message size limit, which leaves a fixed share for encoding and the ' \
-                     'request envelope. Set it lower when a request for a large batch is refused as too large.',
+                     'request envelope. Set it lower when that limit could not be read and is below the assumed 1 MiB.',
+        type: Integer
+
+      option :upload_batch_size,
+        arguments: ['--upload-batch-size NODES'],
+        description: 'How many nodes one chunk request is published to at once. Without it, as many as keep one ' \
+                     'batch of requests under 256 MiB in memory on this host at the broker message size limit.',
         type: Integer
 
       option :download_group_size,
@@ -67,7 +73,7 @@ module MCollective
       # The library defaults stand for the sizes the command line left out.
       def client_settings
         { connection: Util::FileTransfer::Connection.new(options), rpc_timeout: options[:timeout], cleanup: !configuration[:keep_session],
-          **configuration.slice(:chunk_size, :download_group_size).compact }
+          **configuration.slice(:chunk_size, :upload_batch_size, :download_group_size).compact }
       end
 
       def transfer(client, identities)

@@ -25,11 +25,13 @@ module MCollective
         # code 1 is a failure for every one of its actions and that a reply
         # without a data hash is one too. The publish timeout is raised to
         # the rpc timeout so that one chunk reaches every node of a large
-        # group.
-        def agent_call(identities, context, timeout: nil, &)
+        # group. A batch size sends the call to that many identities at a
+        # time, each batch with its own publish and reply windows.
+        def agent_call(identities, context, timeout: nil, batch_size: nil, &)
           return empty_response if identities.empty?
 
-          response = request(AGENT, identities, context, timeout: timeout || @rpc_timeout, publish_timeout: @rpc_timeout, &)
+          response = request(AGENT, identities, context, timeout: timeout || @rpc_timeout, publish_timeout: @rpc_timeout,
+                             batch_size: batch_size, &)
           response[:statuscodes].each do |identity, code|
             next unless code == 1
 
@@ -46,9 +48,17 @@ module MCollective
 
         # One call to any agent, yielding the RPC client to invoke the action
         # on. Status codes above 1 are RPC errors, a missing reply is a
-        # no_response failure, and an exception fails every identity.
-        def request(agent, identities, context, timeout:, publish_timeout:, &)
-          results = @connection.with_client(agent, identities, timeout: timeout, publish_timeout: publish_timeout, &)
+        # no_response failure, and an exception fails every identity. A
+        # batch size makes the client send the call in MCollective's batches
+        # without its pause between them.
+        def request(agent, identities, context, timeout:, publish_timeout:, batch_size: nil)
+          results = @connection.with_client(agent, identities, timeout: timeout, publish_timeout: publish_timeout) do |client|
+            if batch_size
+              client.batch_size = batch_size
+              client.batch_sleep_time = 0
+            end
+            yield client
+          end
           by_sender = index_by_sender(results.is_a?(Array) ? results : [], identities, context)
           response = empty_response
           identities.each do |identity|

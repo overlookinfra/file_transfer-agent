@@ -72,7 +72,7 @@ module MCollective
         # Answers the final local path per identity that succeeded.
         def download_files(transfer, identities, remote, described, staging)
           delivered = {}
-          identities.each_slice(transfer.group_size(@download_group_size)) do |group|
+          identities.each_slice(transfer.download_group_size(@download_group_size)) do |group|
             fetch_file(transfer, group, remote, staging, described).each do |identity, staged|
               final = yield(identity)
               placed = final && place_download(transfer, identity, staged, final)

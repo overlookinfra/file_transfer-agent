@@ -11,6 +11,11 @@ module MCollective
         # unread, so one download round stays well under it.
         REPLY_PENDING_LIMIT = 64 * 1024 * 1024
         REPLY_PENDING_FRACTION = 0.75
+        # The client keeps a copy of a chunk request for every node of an
+        # upload batch in memory until the flusher has written it, so a
+        # batch is bounded to this many bytes at the broker's limit unless
+        # the caller chose its own size.
+        UPLOAD_BATCH_BYTES = 256 * 1024 * 1024
 
         attr_reader :identities, :active, :failures, :sizing, :slowest_chunk
 
@@ -70,7 +75,7 @@ module MCollective
 
         # The download group size, lowered so that one round of replies at
         # the broker's limit fits the client's subscription buffer.
-        def group_size(preferred)
+        def download_group_size(preferred)
           bounded = [(REPLY_PENDING_LIMIT * REPLY_PENDING_FRACTION / @sizing.max_payload).floor, 1].max
           return preferred if preferred <= bounded
 
@@ -78,6 +83,12 @@ module MCollective
             "The download group size of #{preferred} is reduced to #{bounded} so one round of replies stays " \
             "under the client's #{REPLY_PENDING_LIMIT} byte subscription buffer")
           bounded
+        end
+
+        # How many nodes one chunk request is published to at once, the
+        # caller's choice or as many as keep a batch under UPLOAD_BATCH_BYTES.
+        def upload_batch_size(preferred)
+          preferred || [UPLOAD_BATCH_BYTES / @sizing.max_payload, 1].max
         end
       end
     end

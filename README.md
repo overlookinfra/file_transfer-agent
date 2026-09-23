@@ -98,8 +98,11 @@ The arguments of `Client.new`:
 - `rpc_timeout`: seconds to wait for every node's reply to one call, and to
   publish one call to every node. Default 30.
 - `chunk_size`: the most file content one request carries. Without it the
-  broker's limit alone decides, so set it when a request for a large batch
-  is refused as too large.
+  broker's limit alone decides, so set it when that limit could not be read
+  and is below the assumed 1 MiB.
+- `upload_batch_size`: how many nodes one chunk request is published to at
+  once. Without it, as many as keep one batch under 256 MiB in memory on
+  the client at the broker's limit.
 - `download_group_size`: how many nodes one download round asks at once.
   Default 32.
 - `cleanup`: whether sessions are removed afterwards, `true`, `false`, or a
@@ -112,6 +115,12 @@ that. A publish guard refuses a request over the limit before it leaves the
 client and fails those nodes with `payload_too_large`, naming a lower chunk
 size as the remedy. A node that does not answer a chunk is reported as
 `no_response`. Nothing is retried.
+
+A chunk request is published once per node, and the client holds every
+copy in memory until it is written, so a chunk goes to `upload_batch_size`
+nodes at a time through MCollective's batched requests, each batch with
+its own publish and reply windows. The `rpc_timeout` has to cover one
+batch's requests on the wire, 256 MiB at the default batch size.
 
 ### Command line
 
@@ -128,9 +137,9 @@ under `DIRECTORY` named after the node, such as
 `DIRECTORY/web1.example.net/app.log`. The usual filters select the nodes,
 `--timeout` is
 the wait for every node's reply to one chunk (5 seconds by default), and
-`--chunk-size`, `--download-group-size`, and `--keep-session` map onto the
-client arguments above. The exit code is 0 when every node succeeded, 2 when
-any failed, and 1 when no node matched.
+`--chunk-size`, `--upload-batch-size`, `--download-group-size`, and
+`--keep-session` map onto the client arguments above. The exit code is 0
+when every node succeeded, 2 when any failed, and 1 when no node matched.
 
 ## Installation
 

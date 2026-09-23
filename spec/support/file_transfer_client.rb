@@ -23,6 +23,7 @@ end
 # client was last pointed at, and the block the library passed, if any.
 class FakeRpcClient
   attr_reader :identities, :calls
+  attr_accessor :batch_size, :batch_sleep_time
 
   def initialize
     @actions = {}
@@ -34,8 +35,12 @@ class FakeRpcClient
     @actions[action] = handler
   end
 
+  # A connection builds a fresh client per call, so the batch settings
+  # of the previous call do not carry over.
   def discover(nodes:)
     @identities = nodes.dup
+    @batch_size = nil
+    @batch_sleep_time = nil
   end
 
   def progress=(_value)
@@ -136,7 +141,7 @@ module FileTransferClientHelpers
   # wire size, then answers for every addressed identity.
   def stub_put
     rpc.on(:put) do |args, names|
-      put_calls << args.merge(identities: names)
+      put_calls << args.merge(identities: names, batch_size: rpc.batch_size)
       wrapper.publish('mcollective.node.x', 'x' * wire_size(args))
       block_given? ? yield(args, names) : results_for(names)
     end

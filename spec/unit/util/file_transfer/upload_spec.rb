@@ -52,6 +52,46 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(connection.calls.map { |call| call[:publish_timeout] }.uniq).to eq([30])
   end
 
+  it 'publishes each chunk to as many nodes at once as keep a batch under the memory bound at the broker limit' do
+    client.upload(source, destination, nodes)
+
+    expect(chunks.map { |call| call[:batch_size] }.uniq).to eq([256])
+  end
+
+  context 'with a broker limit above the upload batch bound' do
+    let(:max_payload) { 512 * 1024 * 1024 }
+
+    it 'publishes each chunk to one node at a time' do
+      client.upload(source, destination, nodes)
+
+      expect(chunks.map { |call| call[:batch_size] }.uniq).to eq([1])
+    end
+  end
+
+  context 'with an upload batch size' do
+    let(:client_options) { { upload_batch_size: 3 } }
+
+    it 'publishes each chunk to that many nodes at once' do
+      client.upload(source, destination, nodes)
+
+      expect(chunks.map { |call| call[:batch_size] }.uniq).to eq([3])
+    end
+  end
+
+  context 'with an upload batch size of one' do
+    let(:client_options) { { upload_batch_size: 1 } }
+
+    it 'derives the next chunk timeout from the time of one batch rather than the whole chunk' do
+      path = source
+      allow(Process).to receive(:clock_gettime).and_return(0, 12, 12, 24, 24, 36)
+
+      client.upload(path, destination, nodes)
+
+      expect(chunks.map { |call| call[:batch_size] }.uniq).to eq([1])
+      expect(connection.calls.map { |call| call[:timeout] }).to eq([30, 30, 30, 18, 30, 30])
+    end
+  end
+
   it 'uploads into an existing directory on the nodes whose destination is one' do
     stub_stat do |_args, names|
       names.map { |name| rpc_result(name, { exists: true, type: name == node2 ? 'directory' : 'file' }) }

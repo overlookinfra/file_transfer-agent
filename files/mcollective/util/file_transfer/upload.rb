@@ -12,11 +12,13 @@ module MCollective
           @rpc = client.rpc
           @logger = client.logger
           @chunk_size = client.chunk_size
+          @upload_batch_size = client.upload_batch_size
         end
 
         # See Client#upload.
         def run(source, destination, identities)
           transfer = Transfer.start(identities, rpc: @rpc, logger: @logger, chunk_size: @chunk_size)
+          @logger.debug("Upload chunks go to #{transfer.upload_batch_size(@upload_batch_size)} nodes per request")
           landing = landing_paths(transfer, source, destination)
           Session.with(@client, transfer) do |session|
             if File.directory?(source)
@@ -145,14 +147,15 @@ module MCollective
           delivered
         end
 
-        # Sends one chunk to the identities and applies the replies. The
-        # publish guard refuses a message over the broker's limit before it
-        # leaves the client, which fails those identities with the chunk
-        # size named as the remedy.
+        # Sends one chunk to the identities, a batch of them per request,
+        # and applies the replies. The publish guard refuses a message over
+        # the broker's limit before it leaves the client, which fails those
+        # identities with the chunk size named as the remedy.
         def send_chunk(transfer, identities, args, context, timeout)
+          batch_size = transfer.upload_batch_size(@upload_batch_size)
           refused = nil
           started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          response = @rpc.agent_call(identities, context, timeout: timeout) do |client|
+          response = @rpc.agent_call(identities, context, timeout: timeout, batch_size: batch_size) do |client|
             @rpc.guarding(transfer.sizing.max_payload) { client.put(args) }
           rescue PayloadTooLarge => e
             refused = e
@@ -165,7 +168,10 @@ module MCollective
             return
           end
 
-          transfer.record_chunk(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started)
+          # The batches go out one after the other, so the time of one of
+          # them is what the next chunk timeout is derived from.
+          batches = identities.size.fdiv(batch_size).ceil
+          transfer.record_chunk((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) / batches)
           transfer.fail(response[:errors])
         end
 

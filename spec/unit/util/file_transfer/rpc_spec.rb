@@ -112,4 +112,22 @@ RSpec.describe MCollective::Util::FileTransfer::Rpc do
 
     expect(connection.calls.first).to include(timeout: 7, publish_timeout: 30)
   end
+
+  it 'sends a call in batches of the given size without a pause between them' do
+    stub_stat { |_args, names| results_for(names, { exists: true }) }
+
+    response = client.rpc.agent_call(nodes, 'file_transfer.stat /x', batch_size: 1) { |rpc_client| rpc_client.stat(path: '/x') }
+
+    expect(rpc.batch_size).to eq(1)
+    expect(rpc.batch_sleep_time).to eq(0)
+    expect(response[:responded].keys).to eq(nodes)
+  end
+
+  it 'leaves a call without a batch size unbatched' do
+    stub_stat { |_args, names| results_for(names, { exists: true }) }
+
+    stat_call
+
+    expect(rpc.batch_size).to be_nil
+  end
 end
