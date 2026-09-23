@@ -284,7 +284,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     end
 
     before do
-      allow(MCollective::Util::FileTransfer).to receive(:request_bytes) do |_client, _action, args, _identity|
+      allow(MCollective::Util::FileTransfer::Connection).to receive(:request_bytes) do |_client, _action, args, _identity|
         envelope + (decoded(args).bytesize * expansion).ceil
       end
     end
@@ -361,7 +361,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       end
 
       before do
-        allow(MCollective::Util::FileTransfer).to receive(:request_bytes) do |_client, _action, args, _identity|
+        allow(MCollective::Util::FileTransfer::Connection).to receive(:request_bytes) do |_client, _action, args, _identity|
           envelope + (decoded(args).bytesize * expansion).ceil
         end
       end

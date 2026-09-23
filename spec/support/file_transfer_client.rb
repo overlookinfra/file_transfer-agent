@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
+require 'fileutils'
 require 'mcollective'
+require 'tmpdir'
 require File.expand_path('../../files/mcollective/util/file_transfer', __dir__)
 
 # Stands in for the NATS wrapper: the publish guard prepends onto it and
@@ -199,7 +201,7 @@ RSpec.shared_context 'with a file transfer client' do
   # agent's DDL answers a 120 second timeout as the shipped one does. RPC
   # results look their action up in the same DDL, and find no interface.
   before do
-    allow(MCollective::Util::FileTransfer).to receive(:request_bytes) { |_client, _action, args, _identity| wire_size(args) }
+    allow(MCollective::Util::FileTransfer::Connection).to receive(:request_bytes) { |_client, _action, args, _identity| wire_size(args) }
     allow(MCollective::DDL).to receive(:new).with(MCollective::Util::FileTransfer::AGENT)
                                             .and_return(instance_double(MCollective::DDL::AgentDDL, meta: { timeout: 120 }, action_interface: {}))
   end

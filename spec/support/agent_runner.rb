@@ -1,7 +1,12 @@
 # frozen_string_literal: true
 
+require 'digest'
+require 'fileutils'
+require 'json'
 require 'open3'
 require 'rbconfig'
+require 'securerandom'
+require 'tmpdir'
 
 # Runs the agent the way the Choria server does: one process per request,
 # a request file and a reply file, six environment variables and nothing

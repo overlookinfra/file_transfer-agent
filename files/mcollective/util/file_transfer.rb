@@ -1,11 +1,5 @@
 # frozen_string_literal: true
 
-require 'digest/sha2'
-require 'fileutils'
-require 'find'
-require 'pathname'
-require 'securerandom'
-require 'tmpdir'
 require_relative 'file_transfer/default_logger'
 require_relative 'file_transfer/connection'
 require_relative 'file_transfer/sizing'

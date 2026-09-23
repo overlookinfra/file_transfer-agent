@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+require 'digest/sha2'
+require 'find'
+require 'pathname'
+
 module MCollective
   module Util
     module FileTransfer

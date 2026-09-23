@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'mcollective'
+
 module MCollective
   module Util
     module FileTransfer
@@ -51,7 +53,7 @@ module MCollective
         # sent.
         def request_bytes(args, identity)
           @connection.with_client(AGENT, [identity], timeout: @rpc_timeout, publish_timeout: nil) do |client|
-            FileTransfer.request_bytes(client, 'put', args, identity)
+            Connection.request_bytes(client, 'put', args, identity)
           end
         end
 

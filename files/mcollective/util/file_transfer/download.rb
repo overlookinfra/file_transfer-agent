@@ -1,5 +1,10 @@
 # frozen_string_literal: true
 
+require 'digest/sha2'
+require 'fileutils'
+require 'securerandom'
+require 'tmpdir'
+
 module MCollective
   module Util
     module FileTransfer

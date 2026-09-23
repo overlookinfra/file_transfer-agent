@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'mcollective'
 require_relative '../util/file_transfer'
 
 module MCollective

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'mcollective'
+
 module MCollective
   module Util
     module FileTransfer
