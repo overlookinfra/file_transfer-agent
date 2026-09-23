@@ -83,17 +83,18 @@ class FakeConnection
   end
 end
 
-# Records the warnings the library logged.
+# Records the lines the library logged.
 class FakeLogger
-  attr_reader :warnings, :once
+  attr_reader :debugs, :warnings, :once
 
   def initialize
+    @debugs = []
     @warnings = []
     @once = []
   end
 
-  def debug(_message)
-    nil
+  def debug(message)
+    @debugs << message
   end
 
   def warn(message)

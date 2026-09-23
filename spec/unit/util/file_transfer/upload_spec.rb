@@ -301,6 +301,15 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
   context 'when the NATS wrapper is not reachable' do
     let(:connection) { FakeConnection.new(nil) }
 
+    # Nothing passes through the guard, as nothing would without a wrapper,
+    # whatever an earlier example prepended onto the fake wrapper's class.
+    before do
+      rpc.on(:put) do |args, names|
+        put_calls << args.merge(identities: names, batch_size: rpc.batch_size)
+        results_for(names)
+      end
+    end
+
     it 'sizes chunks from the default limit and warns that the limit and the guard are missing' do
       outcomes = client.upload(source, destination, [node1])
 
@@ -308,7 +317,17 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       expect(log.once_messages.first).to include('NoMethodError')
       expect(outcomes[node1]).to be_success
       expect(chunks.map { |call| decoded(call).bytesize }).to eq([16_384, 16_384, 7_232])
+      expect(log.debugs.grep(/on the wire/)).to be_empty
     end
+  end
+
+  it 'logs the wire size of each chunk request against its content at debug' do
+    client.upload(source, destination, nodes)
+
+    lines = log.debugs.grep(/on the wire/)
+    expect(lines.length).to eq(3)
+    expect(lines.first).to eq("file_transfer.put source.bin weighed #{wire_size(chunks.first)} bytes on the wire for 16384 bytes of content")
+    expect(lines.last).to include('(final) weighed', 'for 7232 bytes of content')
   end
 
   context 'when the destination is a directory on some nodes only' do

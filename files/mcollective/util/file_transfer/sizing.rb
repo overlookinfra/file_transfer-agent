@@ -13,13 +13,14 @@ module MCollective
       end
 
       # Prepended onto the NATS wrapper class so that every message published
-      # while a chunk is sent passes through here, and a message over the
-      # limit is refused. The limit is set only inside the connection's
-      # with_client, which serializes calls, so no other request publishes
-      # meanwhile.
+      # while a chunk is sent passes through here, a message over the limit
+      # is refused, and the largest one is remembered for the debug line
+      # that gives the real wire expansion of a chunk. The limit is set
+      # only inside the connection's with_client, which serializes calls,
+      # so no other request publishes meanwhile.
       module PublishHook
         class << self
-          attr_accessor :limit
+          attr_accessor :limit, :largest
 
           def install(wrapper_class)
             wrapper_class.prepend(self) unless wrapper_class.ancestors.include?(self)
@@ -28,7 +29,11 @@ module MCollective
 
         def publish(destination, payload, reply = nil)
           limit = PublishHook.limit
-          raise PayloadTooLarge.new(payload.bytesize, limit) if limit && payload.bytesize > limit
+          if limit
+            raise PayloadTooLarge.new(payload.bytesize, limit) if payload.bytesize > limit
+
+            PublishHook.largest = [PublishHook.largest, payload.bytesize].max
+          end
 
           super
         end

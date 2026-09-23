@@ -113,9 +113,16 @@ module MCollective
             guard_unavailable("#{e.class}: #{e.message}")
           end
           PublishHook.limit = limit
+          PublishHook.largest = 0
           yield
         ensure
           PublishHook.limit = nil
+        end
+
+        # The largest message the last guarded call published, or 0 when
+        # no wrapper could be hooked.
+        def largest_published
+          PublishHook.largest
         end
 
         # Three times the slowest chunk so far, at least MIN_CHUNK_TIMEOUT,

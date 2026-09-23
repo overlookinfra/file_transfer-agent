@@ -173,6 +173,18 @@ module MCollective
           batches = identities.size.fdiv(batch_size).ceil
           transfer.record_chunk((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) / batches)
           transfer.fail(response[:errors])
+          log_wire_size(context, args)
+        end
+
+        # The wire size of the chunk request against its content, read off
+        # a debug log to check the expansion the sizing assumes. The content
+        # size comes back from the strict base64 of the data.
+        def log_wire_size(context, args)
+          wire = @rpc.largest_published
+          return unless wire.positive?
+
+          content = (args[:data].bytesize / 4 * 3) - args[:data].count('=')
+          @logger.debug("#{context} weighed #{wire} bytes on the wire for #{content} bytes of content")
         end
 
         # The permission bits of a stat as the four octal digits put and
