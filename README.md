@@ -148,8 +148,9 @@ under `DIRECTORY` named after the node, such as
 `--timeout` is
 the wait for every node's reply to one chunk (5 seconds by default), and
 `--chunk-size`, `--upload-batch-size`, `--download-batch-size`, and
-`--keep-session` map onto the client arguments above. The exit code is 0
-when every node succeeded, 2 when any failed, and 1 when no node matched.
+`--keep-session` map onto the client arguments above. The exit code
+follows mco commands: 0 when every node succeeded, 2 when any failed, 3
+when no node responded, and 1 when no node matched.
 
 ## Installation
 

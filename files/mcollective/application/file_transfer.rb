@@ -69,7 +69,16 @@ module MCollective
 
         outcomes = transfer(Util::FileTransfer::Client.new(**client_settings), identities.sort)
         report(outcomes)
-        exit(outcomes.values.all?(&:success?) ? 0 : 2)
+        exit(exit_code(outcomes))
+      end
+
+      # The codes of mco commands: 0 when every node succeeded, 2 when any
+      # failed, 3 when no node responded, and 1 above when none matched.
+      def exit_code(outcomes)
+        return 0 if outcomes.values.all?(&:success?)
+        return 3 if outcomes.values.all? { |outcome| outcome.kind == :no_response }
+
+        2
       end
 
       # The library defaults stand for the sizes the command line left out.

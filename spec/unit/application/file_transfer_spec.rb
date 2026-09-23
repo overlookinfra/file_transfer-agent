@@ -74,6 +74,23 @@ RSpec.describe MCollective::Application::File_transfer do
       expect(status).to eq(2)
     end
 
+    it 'exits 3 when no node responded' do
+      outcomes = [node1, node2].to_h { |node| [node, outcome_class.failure(node, :no_response, "No response from #{node} for file_transfer.stat")] }
+      allow(client).to receive(:upload).and_return(outcomes)
+      status = nil
+
+      expect { status = run_main }.to output(a_string_including('2 nodes, 2 failed')).to_stdout
+      expect(status).to eq(3)
+    end
+
+    it 'exits 2 when one node responded and another did not' do
+      outcomes = { node1 => outcome_class.success(node1, '/opt/app/app.tar'),
+                   node2 => outcome_class.failure(node2, :no_response, "No response from #{node2} for file_transfer.put app.tar") }
+      allow(client).to receive(:upload).and_return(outcomes)
+
+      expect(run_main).to eq(2)
+    end
+
     context 'when no node matches the filter' do
       let(:discovered) { [] }
 
