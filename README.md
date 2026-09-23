@@ -98,8 +98,8 @@ The arguments of `Client.new`:
 - `rpc_timeout`: seconds to wait for every node's reply to one call, and to
   publish one call to every node. Default 30.
 - `chunk_size`: the most file content one request carries. Without it the
-  broker's limit alone decides, so set it when that limit could not be read
-  and is below the assumed 1 MiB.
+  measured request and the broker's limit alone decide, so set it when that
+  limit could not be read and is below the assumed 1 MiB.
 - `upload_batch_size`: how many nodes one chunk request is published to at
   once. Without it, as many as keep one batch under 256 MiB in memory on
   the client at the broker's limit.
@@ -110,12 +110,16 @@ The arguments of `Client.new`:
 - `cleanup`: whether sessions are removed afterwards, `true`, `false`, or a
   hash from identity to boolean. Default true.
 
-Chunks are sized from the broker's advertised payload limit: the limit less
-a five percent reserve, divided by a fixed wire expansion of 2.5 bytes per
-content byte, capped by `chunk_size`. A download round asks for a third of
-that. A publish guard refuses a request over the limit before it leaves the
-client and fails those nodes with `payload_too_large`, naming a lower chunk
-size as the remedy. A node that does not answer a chunk is reported as
+Chunks are sized by measurement, not by a model. For every file the
+library builds the request the connector would publish for its final
+chunk, with the gem's own message and security objects and never sent, and
+takes the most content whose request fits the broker's advertised payload
+limit less a five percent reserve, capped by `chunk_size`. A download
+round asks for as much, since a reply carrying the same content weighs
+less than a request: the node signs nothing and sends no certificate. A
+publish guard refuses a request over the limit before it leaves the client
+and fails those nodes with `payload_too_large`, naming a lower chunk size
+as the remedy. A node that does not answer a chunk is reported as
 `no_response`. Nothing is retried.
 
 A chunk request is published once per node, and the client holds every

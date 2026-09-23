@@ -50,18 +50,6 @@ RSpec.describe MCollective::Util::FileTransfer::Session do
       expect(session.paths).to eq(node1 => nil)
       expect(session.failures[node1].message).to include('without a session path')
     end
-
-    context 'when the broker limit leaves no room for a chunk' do
-      let(:max_payload) { 30_000 }
-
-      it 'fails every node before creating anything' do
-        session = client.open_session(nodes)
-
-        expect(session.active).to be_empty
-        expect(session.failures.values.map(&:kind).uniq).to eq([:payload_too_large])
-        expect(rpc.calls.map(&:first)).not_to include(:mktemp)
-      end
-    end
   end
 
   describe '#put' do

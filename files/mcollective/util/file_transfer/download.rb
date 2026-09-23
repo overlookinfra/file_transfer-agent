@@ -66,14 +66,27 @@ module MCollective
           data[:size].is_a?(Integer) && !data[:size].negative? && data[:sha256].is_a?(String)
         end
 
-        # Fetches one remote file from the identities in groups and moves
+        # Fetches one remote file from the identities in batches and moves
         # each verified copy from the staging directory onto the local path
         # the block answers for its identity, or nowhere when it answers nil.
         # Answers the final local path per identity that succeeded.
         def download_files(transfer, identities, remote, described, staging)
           delivered = {}
-          identities.each_slice(transfer.download_batch_size(@download_batch_size)) do |group|
-            fetch_file(transfer, group, remote, staging, described).each do |identity, staged|
+          max_bytes = transfer.sizing.content_bytes(remote, remote)
+          if max_bytes.zero?
+            transfer.fail(Outcome.failures(identities, :payload_too_large) do |identity|
+              "The broker's payload limit of #{transfer.sizing.max_payload} bytes leaves less than " \
+                "#{Sizing::MINIMUM_CHUNK} bytes of file content per reply, so #{remote} cannot be fetched from #{identity}"
+            end)
+            return delivered
+          end
+          # A reply weighs at most what a request carrying the same content
+          # would, for as much of the file as a round asks for.
+          largest = described.values_at(*identities).map { |data| data[:size] }.max
+          reply_wire = transfer.sizing.wire_bytes([max_bytes, largest].min, remote, remote)
+          @logger.debug("#{remote} comes in replies of #{max_bytes} bytes, at most #{reply_wire} on the wire")
+          identities.each_slice(transfer.download_batch_size(@download_batch_size, reply_wire)) do |group|
+            fetch_file(transfer, group, remote, staging, described, max_bytes).each do |identity, staged|
               final = yield(identity)
               placed = final && place_download(transfer, identity, staged, final)
               delivered[identity] = placed if placed
@@ -115,11 +128,10 @@ module MCollective
         # the group at eof, and a node still sending past the size stat
         # reported is dropped. The digest of each complete file is compared
         # with the one stat reported before the transfer started.
-        def fetch_file(transfer, group, remote, staging, expected)
+        def fetch_file(transfer, group, remote, staging, expected, max_bytes)
           handles = group.to_h { |identity| [identity, File.new(File.join(staging, SecureRandom.hex(16)), 'wb')] }
           pending = group.dup
           offset = 0
-          max_bytes = transfer.sizing.reply_bytes
           begin
             while transfer.active? && !pending.empty?
               pending &= transfer.active

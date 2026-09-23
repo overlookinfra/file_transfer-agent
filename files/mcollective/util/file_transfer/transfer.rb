@@ -22,20 +22,11 @@ module MCollective
 
         attr_reader :identities, :active, :failures, :sizing, :slowest_chunk
 
-        # A transfer for the identities with its chunks sized to the broker's
-        # limit, and every identity failed when that limit leaves no room
-        # for a chunk.
+        # A transfer for the identities under the broker's limit.
         def self.start(identities, rpc:, logger:, chunk_size:)
-          sizing = Sizing.new(max_payload: rpc.max_payload, chunk_size: chunk_size)
-          logger.debug("File transfer with #{FileTransfer.count(identities)} uses #{sizing.summary}")
-          transfer = new(identities, sizing, logger)
-          return transfer if sizing.usable?
-
-          transfer.fail(Outcome.failures(identities, :payload_too_large) do
-            "The broker's payload limit of #{sizing.max_payload} bytes leaves less than #{Sizing::MINIMUM_CHUNK} bytes " \
-              'of file content per request, so files cannot be transferred'
-          end)
-          transfer
+          sizing = Sizing.new(max_payload: rpc.max_payload, chunk_size: chunk_size, rpc: rpc, identity: identities.first)
+          logger.debug("File transfer with #{FileTransfer.count(identities)} has #{sizing.summary}")
+          new(identities, sizing, logger)
         end
 
         def initialize(identities, sizing, logger)
@@ -77,10 +68,10 @@ module MCollective
         end
 
         # How many nodes one download round asks at once, as many as keep
-        # one round of replies at their wire size under the broker's stall
-        # threshold, or the caller's smaller choice.
-        def download_batch_size(preferred)
-          bounded = [(BROKER_PENDING_LIMIT * BROKER_STALL_FRACTION / @sizing.reply_wire_bytes).floor, 1].max
+        # one round of replies of the given wire size under the broker's
+        # stall threshold, or the caller's smaller choice.
+        def download_batch_size(preferred, reply_wire)
+          bounded = [(BROKER_PENDING_LIMIT * BROKER_STALL_FRACTION / reply_wire).floor, 1].max
           return bounded if preferred.nil?
           return preferred if preferred <= bounded
 

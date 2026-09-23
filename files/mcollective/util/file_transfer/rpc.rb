@@ -46,6 +46,15 @@ module MCollective
           response
         end
 
+        # The bytes the connector would publish for one put with these
+        # arguments to the identity, built as the gem builds them and never
+        # sent.
+        def request_bytes(args, identity)
+          @connection.with_client(AGENT, [identity], timeout: @rpc_timeout, publish_timeout: nil) do |client|
+            FileTransfer.request_bytes(client, 'put', args, identity)
+          end
+        end
+
         # One call to any agent, yielding the RPC client to invoke the action
         # on. Status codes above 1 are RPC errors, a missing reply is a
         # no_response failure, and an exception fails every identity. A

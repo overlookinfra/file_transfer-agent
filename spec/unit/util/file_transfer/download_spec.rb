@@ -49,19 +49,33 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     FileUtils.mkdir_p(destination)
   end
 
-  it 'fetches the file from every node in rounds and places each verified copy under its node directory' do
+  context 'with a file larger than a reply' do
+    let(:contents) { { node1 => 'a' * 40_000, node2 => 'b' * 100 } }
+
+    it 'fetches the file from every node in rounds and places each verified copy under its node directory' do
+      stub_file_stats
+      stub_get
+
+      outcomes = client.download('/var/log/app.log', destinations)
+
+      expect(outcomes.keys).to eq(nodes)
+      expect(outcomes.values).to all(be_success)
+      expect(File.binread(File.join(dir_for(node1), 'app.log'))).to eq('a' * 40_000)
+      expect(File.binread(File.join(dir_for(node2), 'app.log'))).to eq('b' * 100)
+      expect(outcomes[node1].path).to eq(File.join(dir_for(node1), 'app.log'))
+      expect(get_calls.map { |call| call[:offset] }).to eq([0, 16_384, 32_768])
+      expect(get_calls.map { |call| call[:identities] }).to eq([nodes, [node1], [node1]])
+    end
+  end
+
+  it 'asks for as much of a file per reply as a request could carry' do
     stub_file_stats
     stub_get
 
-    outcomes = client.download('/var/log/app.log', destinations)
+    client.download('/var/log/app.log', destinations)
 
-    expect(outcomes.keys).to eq(nodes)
-    expect(outcomes.values).to all(be_success)
-    expect(File.binread(File.join(dir_for(node1), 'app.log'))).to eq('a' * 12_000)
-    expect(File.binread(File.join(dir_for(node2), 'app.log'))).to eq('b' * 100)
-    expect(outcomes[node1].path).to eq(File.join(dir_for(node1), 'app.log'))
-    expect(get_calls.map { |call| call[:offset] }).to eq([0, 5_461, 10_922])
-    expect(get_calls.map { |call| call[:identities] }).to eq([nodes, [node1], [node1]])
+    expect(get_calls.map { |call| call[:max_bytes] }.uniq).to eq([16_384])
+    expect(get_calls.map { |call| call[:identities] }).to eq([nodes])
   end
 
   it 'creates no session for a download' do
@@ -87,12 +101,12 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
   end
 
-  # With no chunk size a 64 MiB broker limit makes a reply weigh about
-  # 21 MiB on the wire, so two of them fit under the 48 MiB threshold and
-  # a third does not.
+  # A reply of a 100 byte file weighs 2184 bytes in the fake's wire model,
+  # so two fit under three quarters of a 6000 byte backlog and a third
+  # does not.
   context 'with replies large enough that three nodes overrun the broker backlog' do
-    let(:chunk_size) { nil }
-    let(:max_payload) { 64 * 1024 * 1024 }
+    before { stub_const('MCollective::Util::FileTransfer::Transfer::BROKER_PENDING_LIMIT', 6_000) }
+
     let(:node3) { 'node3.example.com' }
     let(:nodes) { [node1, node2, node3] }
     let(:contents) { { node1 => 'a' * 100, node2 => 'b' * 100, node3 => 'c' * 100 } }
@@ -156,16 +170,16 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
   it 'fails a node whose reply carries more than the bytes the round asked for' do
     stub_file_stats
-    oversized = ['x' * 6_000].pack('m0')
+    oversized = ['x' * 20_000].pack('m0')
     rpc.on(:get) do |_args, names, &block|
-      names.each { |name| block.call(nil, rpc_result(name, { data: oversized, bytes: 6_000, eof: false })) }
+      names.each { |name| block.call(nil, rpc_result(name, { data: oversized, bytes: 20_000, eof: false })) }
       []
     end
 
     outcomes = client.download('/var/log/app.log', destinations.slice(node1))
 
     expect(outcomes[node1].kind).to eq(:transfer_failed)
-    expect(outcomes[node1].message).to include('6000 bytes, more than the 5461 requested')
+    expect(outcomes[node1].message).to include('20000 bytes, more than the 16384 requested')
   end
 
   it 'fails a node whose reply is not valid base64' do
@@ -224,7 +238,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
       outcomes = client.download('/var/log/app.log', destinations.slice(node1))
 
-      expect(get_calls.map { |call| [call[:offset], call[:max_bytes]] }).to eq([[0, 5_461]])
+      expect(get_calls.map { |call| [call[:offset], call[:max_bytes]] }).to eq([[0, 16_384]])
       expect(outcomes[node1].kind).to eq(:no_response)
     end
   end

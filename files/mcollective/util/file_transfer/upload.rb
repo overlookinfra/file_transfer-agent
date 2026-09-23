@@ -91,6 +91,20 @@ module MCollective
         # unless one is given. Answers the identities that received the
         # whole file.
         def upload_file(transfer, session, local_path, name, landing, mode: nil)
+          identities = landing.keys & transfer.active
+          return [] if identities.empty?
+
+          # Measured against the longest destination, the largest request
+          # any chunk of the file takes.
+          requested = transfer.sizing.content_bytes(name, landing.values.compact.max_by(&:bytesize) || name)
+          if requested.zero?
+            transfer.fail(Outcome.failures(identities, :payload_too_large) do |identity|
+              "The broker's payload limit of #{transfer.sizing.max_payload} bytes leaves less than " \
+                "#{Sizing::MINIMUM_CHUNK} bytes of file content per request, so #{name} cannot be sent to #{identity}"
+            end)
+            return []
+          end
+          @logger.debug("#{name} goes in chunks of #{requested} bytes")
           stat = File.stat(local_path)
           size = stat.size
           mode ||= permission_bits(stat)
@@ -102,7 +116,6 @@ module MCollective
               identities = (landing.keys & transfer.active) - delivered
               break if identities.empty?
 
-              requested = transfer.sizing.chunk_bytes
               file.seek(offset)
               chunk = file.read(requested) || ''
               # A regular file reads short only at its end, so a short read
@@ -163,7 +176,7 @@ module MCollective
           end
           if refused
             transfer.fail(Outcome.failures(identities, :payload_too_large) do |identity|
-              "#{context} on #{identity} was not sent because #{refused.message}. Lower the chunk size."
+              "#{context} on #{identity} was not sent. #{refused.message}. Lower the chunk size."
             end)
             return
           end

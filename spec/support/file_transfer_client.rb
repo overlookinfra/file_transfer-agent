@@ -194,5 +194,17 @@ RSpec.shared_context 'with a file transfer client' do
   let(:put_calls) { [] }
   let(:workdir) { Dir.mktmpdir('file_transfer-client') }
 
+  # The sizing measures requests through this, with the wire model the
+  # fake wrapper publishes with, so the fit and the guard agree.
+  before do
+    allow(MCollective::Util::FileTransfer).to receive(:request_bytes) { |_client, _action, args, _identity| wire_size(args) }
+  end
+
   after { FileUtils.remove_entry_secure(workdir) }
+
+  # The calls that invoke an action, leaving out the ones that only borrow
+  # a client to measure a request.
+  def action_calls
+    connection.calls.select { |call| call[:publish_timeout] }
+  end
 end

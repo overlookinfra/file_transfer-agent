@@ -14,6 +14,24 @@ module MCollective
         connector.respond_to?(:connection) ? connector.connection : nil
       end
 
+      # The bytes the connector would publish for one direct request from
+      # this RPC client to the identity, built as the client and the
+      # connector build a request and never sent.
+      #
+      # @param client [MCollective::RPC::Client] The client the request would go through
+      # @return [Integer]
+      def self.request_bytes(client, action, args, identity)
+        options = client.options
+        framing = { agent: client.agent, type: :request, collective: options[:collective], filter: options[:filter], options: options }
+        message = Message.new(client.new_request(action, args), nil, framing)
+        message.discovered_hosts = [identity]
+        message.type = :direct_request
+        message.encode!
+        message.base64_encode!
+        target = PluginManager['connector_plugin'].target_for(message, identity)
+        { 'protocol' => 'choria:transport:1', 'data' => message.payload, 'headers' => target[:headers] }.to_json.bytesize
+      end
+
       # Builds one RPC client per call from an options hash, the way an mco
       # application does, and serializes the calls, because the publish
       # guard keeps its limit in module state while a call runs. A caller

@@ -39,7 +39,7 @@ RSpec.describe MCollective::Util::FileTransfer::PublishHook do
     described_class.limit = 100
 
     expect { wrapper.publish('subject', 'x' * 130) }
-      .to raise_error(MCollective::Util::FileTransfer::PayloadTooLarge, "a 130 byte message exceeds the broker's 100 byte payload limit")
+      .to raise_error(MCollective::Util::FileTransfer::PayloadTooLarge, "A 130 byte message exceeds the broker's 100 byte payload limit")
     expect(wrapper.sent).to be_empty
   end
 
