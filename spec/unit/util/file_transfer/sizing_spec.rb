@@ -30,6 +30,10 @@ RSpec.describe MCollective::Util::FileTransfer::Sizing do
     expect(sizing.reply_bytes).to eq(126_666)
   end
 
+  it 'weighs a reply on the wire at the same expansion as a request' do
+    expect(sizing.reply_wire_bytes).to eq(316_665)
+  end
+
   it 'is usable when the limit leaves exactly the minimum chunk' do
     # 43,116 less its 2,156 byte reserve is 40,960 wire bytes, which is
     # 16,384 content bytes at 2.5 per byte.

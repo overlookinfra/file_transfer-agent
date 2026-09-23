@@ -7,10 +7,13 @@ module MCollective
       # removed the others, the chunk sizing, and the timing the chunk
       # timeout is derived from.
       class Transfer
-        # nats-pure drops replies once a subscription holds this many bytes
-        # unread, so one download round stays well under it.
-        REPLY_PENDING_LIMIT = 64 * 1024 * 1024
-        REPLY_PENDING_FRACTION = 0.75
+        # Every reply of a download round lands on the client's one broker
+        # connection. nats-server closes a connection whose unread backlog
+        # passes this many bytes, after stalling the senders above the
+        # fraction below, and the Choria broker keeps both, so one round of
+        # replies stays under the stall threshold.
+        BROKER_PENDING_LIMIT = 64 * 1024 * 1024
+        BROKER_STALL_FRACTION = 0.75
         # The client keeps a copy of a chunk request for every node of an
         # upload batch in memory until the flusher has written it, so a
         # batch is bounded to this many bytes at the broker's limit unless
@@ -73,15 +76,17 @@ module MCollective
           end
         end
 
-        # The download group size, lowered so that one round of replies at
-        # the broker's limit fits the client's subscription buffer.
-        def download_group_size(preferred)
-          bounded = [(REPLY_PENDING_LIMIT * REPLY_PENDING_FRACTION / @sizing.max_payload).floor, 1].max
+        # How many nodes one download round asks at once, as many as keep
+        # one round of replies at their wire size under the broker's stall
+        # threshold, or the caller's smaller choice.
+        def download_batch_size(preferred)
+          bounded = [(BROKER_PENDING_LIMIT * BROKER_STALL_FRACTION / @sizing.reply_wire_bytes).floor, 1].max
+          return bounded if preferred.nil?
           return preferred if preferred <= bounded
 
-          @logger.warn_once('file_transfer_download_group_bounded',
-            "The download group size of #{preferred} is reduced to #{bounded} so one round of replies stays " \
-            "under the client's #{REPLY_PENDING_LIMIT} byte subscription buffer")
+          @logger.warn_once('file_transfer_download_batch_bounded',
+            "The download batch size of #{preferred} is reduced to #{bounded} so one round of replies stays " \
+            "under three quarters of the #{BROKER_PENDING_LIMIT} bytes the broker holds for a connection before closing it")
           bounded
         end
 

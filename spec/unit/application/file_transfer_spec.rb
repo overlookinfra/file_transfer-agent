@@ -54,11 +54,11 @@ RSpec.describe MCollective::Application::File_transfer do
     end
 
     it 'passes the size options through and keeps the session when asked' do
-      settings = { chunk_size: 65_536, upload_batch_size: 100, download_group_size: 4, keep_session: true }
+      settings = { chunk_size: 65_536, upload_batch_size: 100, download_batch_size: 4, keep_session: true }
       configure('upload', '/srv/app.tar', '/opt/app/app.tar', **settings)
       allow(client).to receive(:upload).and_return(successes([node1, node2], '/opt/app/app.tar'))
       expect(MCollective::Util::FileTransfer::Client).to receive(:new)
-        .with(connection: :connection, rpc_timeout: 5, cleanup: false, chunk_size: 65_536, upload_batch_size: 100, download_group_size: 4)
+        .with(connection: :connection, rpc_timeout: 5, cleanup: false, chunk_size: 65_536, upload_batch_size: 100, download_batch_size: 4)
         .and_return(client)
 
       expect { run_main }.to output.to_stdout

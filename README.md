@@ -103,8 +103,10 @@ The arguments of `Client.new`:
 - `upload_batch_size`: how many nodes one chunk request is published to at
   once. Without it, as many as keep one batch under 256 MiB in memory on
   the client at the broker's limit.
-- `download_group_size`: how many nodes one download round asks at once.
-  Default 32.
+- `download_batch_size`: how many nodes one download round asks at once.
+  Without it, as many as keep one round of replies under three quarters
+  of the 64 MiB the broker holds for the client's connection before
+  closing it.
 - `cleanup`: whether sessions are removed afterwards, `true`, `false`, or a
   hash from identity to boolean. Default true.
 
@@ -122,6 +124,14 @@ nodes at a time through MCollective's batched requests, each batch with
 its own publish and reply windows. The `rpc_timeout` has to cover one
 batch's requests on the wire, 256 MiB at the default batch size.
 
+Every reply of a download round lands on the client's one broker
+connection, and the broker closes a connection whose unread backlog passes
+64 MiB, stalling the senders above three quarters of that. A download
+round therefore asks `download_batch_size` nodes at a time, by default as
+many as keep one round of replies at their wire size under that
+threshold. A larger batch given by the caller is reduced to it with a
+warning.
+
 ### Command line
 
 The client files also install `mco file_transfer`:
@@ -137,7 +147,7 @@ under `DIRECTORY` named after the node, such as
 `DIRECTORY/web1.example.net/app.log`. The usual filters select the nodes,
 `--timeout` is
 the wait for every node's reply to one chunk (5 seconds by default), and
-`--chunk-size`, `--upload-batch-size`, `--download-group-size`, and
+`--chunk-size`, `--upload-batch-size`, `--download-batch-size`, and
 `--keep-session` map onto the client arguments above. The exit code is 0
 when every node succeeded, 2 when any failed, and 1 when no node matched.
 

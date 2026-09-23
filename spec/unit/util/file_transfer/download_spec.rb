@@ -73,8 +73,8 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(rpc.calls.map(&:first)).not_to include(:mktemp)
   end
 
-  context 'with a download group size of one' do
-    let(:client_options) { { download_group_size: 1 } }
+  context 'with a download batch size of one' do
+    let(:client_options) { { download_batch_size: 1 } }
 
     it 'downloads one node at a time' do
       stub_file_stats
@@ -84,6 +84,43 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
       expect(get_calls.first[:identities]).to eq([node1])
       expect(get_calls.map { |call| call[:identities] }).to include([node2])
+    end
+  end
+
+  # With no chunk size a 64 MiB broker limit makes a reply weigh about
+  # 21 MiB on the wire, so two of them fit under the 48 MiB threshold and
+  # a third does not.
+  context 'with replies large enough that three nodes overrun the broker backlog' do
+    let(:chunk_size) { nil }
+    let(:max_payload) { 64 * 1024 * 1024 }
+    let(:node3) { 'node3.example.com' }
+    let(:nodes) { [node1, node2, node3] }
+    let(:contents) { { node1 => 'a' * 100, node2 => 'b' * 100, node3 => 'c' * 100 } }
+
+    it 'asks two nodes at a time without being told a batch size' do
+      stub_file_stats
+      stub_get
+
+      outcomes = client.download('/var/log/app.log', destinations)
+
+      expect(get_calls.map { |call| call[:identities] }).to eq([[node1, node2], [node3]])
+      expect(outcomes.values).to all(be_success)
+      expect(log.once_ids).not_to include('file_transfer_download_batch_bounded')
+    end
+
+    context 'and a batch size of three' do
+      let(:client_options) { { download_batch_size: 3 } }
+
+      it 'reduces the batch to two with a warning naming the broker' do
+        stub_file_stats
+        stub_get
+
+        client.download('/var/log/app.log', destinations)
+
+        expect(get_calls.map { |call| call[:identities] }).to eq([[node1, node2], [node3]])
+        expect(log.once_ids).to include('file_transfer_download_batch_bounded')
+        expect(log.once_messages.last).to include('batch size of 3 is reduced to 2', 'the broker holds for a connection')
+      end
     end
   end
 

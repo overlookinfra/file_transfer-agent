@@ -32,9 +32,11 @@ module MCollective
                      'batch of requests under 256 MiB in memory on this host at the broker message size limit.',
         type: Integer
 
-      option :download_group_size,
-        arguments: ['--download-group-size NODES'],
-        description: 'How many nodes a download fetches from at once, 32 by default',
+      option :download_batch_size,
+        arguments: ['--download-batch-size NODES'],
+        description: 'How many nodes a download fetches from at once. Without it, as many as keep one round of ' \
+                     'replies under three quarters of the 64 MiB the broker holds for this host before closing ' \
+                     'its connection.',
         type: Integer
 
       option :keep_session,
@@ -73,7 +75,7 @@ module MCollective
       # The library defaults stand for the sizes the command line left out.
       def client_settings
         { connection: Util::FileTransfer::Connection.new(options), rpc_timeout: options[:timeout], cleanup: !configuration[:keep_session],
-          **configuration.slice(:chunk_size, :upload_batch_size, :download_group_size).compact }
+          **configuration.slice(:chunk_size, :upload_batch_size, :download_batch_size).compact }
       end
 
       def transfer(client, identities)

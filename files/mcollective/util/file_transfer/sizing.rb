@@ -43,9 +43,10 @@ module MCollective
         # so this leaves room for the request envelope.
         EXPANSION = 2.5
         MINIMUM_CHUNK = 16_384
-        # A reply is built by the node's server with its own protocol
-        # version, which may base64 the body once more than the client's
-        # requests, so a reply asks for a third of the request budget.
+        # A reply is built by the node's server, whose v1 transport base64
+        # encodes the secure reply as the client encodes a request, so it
+        # carries the same two passes. A third of the request budget keeps
+        # replies well inside the limit and download batches large.
         REPLY_DIVISOR = 3
 
         attr_reader :max_payload, :chunk_bytes, :reply_bytes
@@ -65,6 +66,11 @@ module MCollective
         # Whether the broker's limit leaves room for a chunk at all.
         def usable?
           @chunk_bytes >= MINIMUM_CHUNK
+        end
+
+        # The most a reply weighs on the wire under the same expansion.
+        def reply_wire_bytes
+          (@reply_bytes * EXPANSION).ceil
         end
 
         def summary
