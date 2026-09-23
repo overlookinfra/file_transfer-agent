@@ -5,14 +5,14 @@ require 'spec_helper'
 RSpec.describe 'the file_transfer agent mkdir action' do
   include_context 'with an agent root'
 
-  it 'creates every missing directory of a nested path without a mode and answers created true' do
+  it 'creates every missing directory of a nested path without a mode' do
     target = File.join(root, 'a', 'b', 'c')
 
     reply = run_agent('mkdir', { 'path' => target })
 
     expect(reply.statuscode).to eq(0)
     expect(reply.statusmsg).to eq('OK')
-    expect(reply.data).to eq('created' => true)
+    expect(reply.data).to eq({})
     expect(File.directory?(File.join(root, 'a'))).to be(true)
     expect(File.directory?(File.join(root, 'a', 'b'))).to be(true)
     expect(File.directory?(target)).to be(true)
@@ -54,14 +54,14 @@ RSpec.describe 'the file_transfer agent mkdir action' do
     expect(mode_of(File.join(ancestor, 'child'))).to eq('0750')
   end
 
-  it 'answers created false for a directory that already exists' do
+  it 'succeeds for a directory that already exists and leaves it in place' do
     target = File.join(root, 'already')
     Dir.mkdir(target)
 
     reply = run_agent('mkdir', { 'path' => target })
 
     expect(reply.statuscode).to eq(0)
-    expect(reply.data).to eq('created' => false)
+    expect(reply.data).to eq({})
     expect(File.directory?(target)).to be(true)
   end
 
@@ -73,7 +73,7 @@ RSpec.describe 'the file_transfer agent mkdir action' do
     reply = run_agent('mkdir', { 'path' => target, 'mode' => '0700' })
 
     expect(reply.statuscode).to eq(0)
-    expect(reply.data).to eq('created' => false)
+    expect(reply.data).to eq({})
     expect(mode_of(target)).to eq('0755')
   end
 
@@ -115,7 +115,7 @@ RSpec.describe 'the file_transfer agent mkdir action' do
     reply = run_agent('mkdir', { 'path' => File.join(link, 'made'), 'mode' => '0750' })
 
     expect(reply.statuscode).to eq(0)
-    expect(reply.data).to eq('created' => true)
+    expect(reply.data).to eq({})
     expect(File.directory?(File.join(target, 'made'))).to be(true)
     expect(mode_of(File.join(target, 'made'))).to eq('0750')
     expect(File.symlink?(link)).to be(true)

@@ -307,7 +307,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       mkdirs = []
       rpc.on(:mkdir) do |args, names|
         mkdirs << args
-        results_for(names, { created: true })
+        results_for(names)
       end
 
       outcomes = client.upload(tree, '/opt/app/tree', [node1])

@@ -145,13 +145,7 @@
           "optional": true
         }
       },
-      "output": {
-        "created": {
-          "description": "Whether any directory was created",
-          "display_as": "Created",
-          "type": "boolean"
-        }
-      }
+      "output": {}
     },
     {
       "action": "mktemp",

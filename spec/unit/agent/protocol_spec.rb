@@ -197,7 +197,7 @@ RSpec.describe 'the file_transfer protocol' do
         }
 
         expect(replies.transform_values(&:statuscode)).to eq(put: 0, stat: 0, list: 0, mkdir: 0, get: 0, cleanup: 0)
-        expect(replies[:mkdir].data).to eq('created' => true)
+        expect(File.directory?(File.join(root, 'made'))).to be(true)
         expect(replies[:cleanup].data).to eq('removed' => true)
         expect(replies[:stat].data['type']).to eq('directory')
         expect(replies[:list].data['total']).to eq(1)

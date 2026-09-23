@@ -228,24 +228,14 @@ module FileTransfer
       { 'entries' => entries, 'total' => names.length - (page.length - entries.length) }
     end
 
-    # The missing parents come from mkdir_p and the directory itself from
-    # one mkdir, whose outcome says whether this call created it. With a
-    # mode, every directory created here is chmod-ed after its mkdir, which
-    # is what makes setuid and setgid bits arrive, since the kernel drops
-    # them from the mode given to mkdir. Without a mode the umask applies.
+    # mkdir_p creates the missing directories top down and, given a mode,
+    # chmods each one after creating it, which is what makes setuid and
+    # setgid bits arrive, since the kernel drops them from the mode given
+    # to mkdir. Without a mode the umask applies. A directory that is
+    # already there is left as it is, and anything else in the way raises.
     def mkdir
-      path = path_input('path')
-      mode = optional_mode('mode')
-      FileUtils.mkdir_p(File.dirname(path), mode: mode)
-      begin
-        Dir.mkdir(path)
-      rescue Errno::EEXIST
-        raise unless File.directory?(path)
-
-        return { 'created' => false }
-      end
-      File.chmod(mode, path) if mode
-      { 'created' => true }
+      FileUtils.mkdir_p(path_input('path'), mode: optional_mode('mode'))
+      {}
     end
 
     # Sessions

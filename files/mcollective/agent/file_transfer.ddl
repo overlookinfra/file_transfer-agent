@@ -121,11 +121,6 @@ action "mkdir", :description => "Create a directory and any missing parents" do
         :validation  => '\A.+\z',
         :maxlength   => 4096,
         :optional    => false
-
-  output :created,
-         :description => "Whether any directory was created",
-         :type        => "boolean",
-         :display_as  => "Created"
 end
 
 action "mktemp", :description => "Create a session directory under the agent's temp root and sweep stale sessions" do

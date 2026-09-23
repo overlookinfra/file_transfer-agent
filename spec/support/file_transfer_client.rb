@@ -156,7 +156,7 @@ module FileTransferClientHelpers
   end
 
   def stub_mkdir
-    rpc.on(:mkdir) { |_args, names| results_for(names, { created: true }) }
+    rpc.on(:mkdir) { |_args, names| results_for(names) }
   end
 
   def local_file(name, content, mode: 0o644)

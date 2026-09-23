@@ -32,7 +32,7 @@ agent needs no MCollective runtime on the node at all.
 | `get` | Read one chunk of a file | `path`, `offset`, `max_bytes` | `data`, `bytes`, `eof`, `size` |
 | `stat` | Describe a path | `path`, `checksum` | `exists`, `type`, `symlink`, `size`, `mode`, `mtime`, `sha256` |
 | `list` | List one page of a directory | `path`, `offset`, `limit` | `entries`, `total` |
-| `mkdir` | Create a directory and missing parents | `path`, `mode` | `created` |
+| `mkdir` | Create a directory and missing parents | `path`, `mode` | none |
 
 Chunk `data` is base64 encoded in both directions and never compressed.
 Compress a file before sending it when its size matters.
