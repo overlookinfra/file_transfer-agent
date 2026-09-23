@@ -71,12 +71,12 @@ module MCollective
         # @param logger [#debug, #warn, #warn_once] Receives the log lines, see DefaultLogger
         # @param rpc_timeout [Numeric] Seconds to wait for every node's reply to one call, and to
         #   publish one call to every node
-        # @param chunk_size [Integer] The most file content one request carries, before the
-        #   broker's limit lowers it
+        # @param chunk_size [Integer, nil] The most file content one request carries, or nil to let
+        #   the broker's limit alone decide
         # @param download_group_size [Integer] How many nodes one download round asks at once
         # @param cleanup [Boolean, Hash{String => Boolean}] Whether sessions are removed
         #   afterwards, for every node or per identity
-        def initialize(connection:, logger: DefaultLogger.new, rpc_timeout: 30, chunk_size: 524_288,
+        def initialize(connection:, logger: DefaultLogger.new, rpc_timeout: 30, chunk_size: nil,
                        download_group_size: 32, cleanup: true)
           @rpc = Rpc.new(connection, logger, rpc_timeout)
           @logger = logger

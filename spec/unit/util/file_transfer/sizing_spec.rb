@@ -19,6 +19,13 @@ RSpec.describe MCollective::Util::FileTransfer::Sizing do
     expect(capped.chunk_bytes).to eq(65_536)
   end
 
+  it 'takes what the limit allows when no chunk size is given' do
+    uncapped = described_class.new(max_payload: max_payload, chunk_size: nil)
+
+    expect(uncapped.chunk_bytes).to eq(380_000)
+    expect(uncapped.summary).to include('no chunk size')
+  end
+
   it 'asks for a third of the chunk in a reply' do
     expect(sizing.reply_bytes).to eq(126_666)
   end

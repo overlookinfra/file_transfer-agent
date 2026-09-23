@@ -97,8 +97,9 @@ The arguments of `Client.new`:
   `warn_once(id, message)`. The default writes to `MCollective::Log`.
 - `rpc_timeout`: seconds to wait for every node's reply to one call, and to
   publish one call to every node. Default 30.
-- `chunk_size`: the most file content one request carries, before the
-  broker's limit lowers it. Default 524288.
+- `chunk_size`: the most file content one request carries. Without it the
+  broker's limit alone decides, so set it when a request for a large batch
+  is refused as too large.
 - `download_group_size`: how many nodes one download round asks at once.
   Default 32.
 - `cleanup`: whether sessions are removed afterwards, `true`, `false`, or a

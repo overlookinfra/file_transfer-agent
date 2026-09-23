@@ -51,12 +51,14 @@ module MCollective
         attr_reader :max_payload, :chunk_bytes, :reply_bytes
 
         # @param max_payload [Integer] The broker's advertised limit in bytes
-        # @param chunk_size [Integer] The most content a caller wants in one request
+        # @param chunk_size [Integer, nil] The most content a caller wants in one request, or nil
+        #   for whatever the limit allows
         def initialize(max_payload:, chunk_size:)
           @max_payload = max_payload
           @chunk_size = chunk_size
           reserve = (max_payload * RESERVE_FRACTION).ceil
-          @chunk_bytes = [((max_payload - reserve) / EXPANSION).floor, chunk_size].min
+          @chunk_bytes = ((max_payload - reserve) / EXPANSION).floor
+          @chunk_bytes = [@chunk_bytes, chunk_size].min if chunk_size
           @reply_bytes = @chunk_bytes / REPLY_DIVISOR
         end
 
@@ -66,7 +68,8 @@ module MCollective
         end
 
         def summary
-          "chunks of #{@chunk_bytes} bytes and replies of #{@reply_bytes} bytes (broker limit #{@max_payload}, chunk size #{@chunk_size})"
+          cap = @chunk_size ? "chunk size #{@chunk_size}" : 'no chunk size'
+          "chunks of #{@chunk_bytes} bytes and replies of #{@reply_bytes} bytes (broker limit #{@max_payload}, #{cap})"
         end
       end
     end

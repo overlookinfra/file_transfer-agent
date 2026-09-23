@@ -21,9 +21,9 @@ module MCollective
 
       option :chunk_size,
         arguments: ['--chunk-size BYTES'],
-        description: 'Upper bound on the bytes of file content per request, 524288 by default. The chunk sent is the smaller of ' \
-                     'this and what the broker message size limit leaves for content once base64 and the request envelope ' \
-                     'are accounted for, about 38 percent of that limit',
+        description: 'Upper bound on the bytes of file content per request. Without it, the chunk is what the library ' \
+                     'computes from the broker message size limit, which leaves a fixed share for encoding and the ' \
+                     'request envelope. Set it lower when a request for a large batch is refused as too large.',
         type: Integer
 
       option :download_group_size,
