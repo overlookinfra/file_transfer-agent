@@ -351,7 +351,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       end
     end
 
-    context 'and the broker refuses the second landing group' do
+    context 'when the broker refuses the second landing group' do
       let(:max_payload) { 200_000 }
 
       # Only the longer destination trips the guard, with weight the

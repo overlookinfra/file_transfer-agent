@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'mcollective/connector/nats'
 
 RSpec.describe MCollective::Util::FileTransfer::Connection do
-  let(:rpc_client) { double('MCollective::RPC::Client', 'progress=': nil, discover: nil) }
+  let(:rpc_client) { instance_double(MCollective::RPC::Client, 'progress=': nil, discover: nil) }
   let(:options) { { timeout: 5, collective: 'mcollective', filter: {} } }
   let(:connection) { described_class.new(options) }
 
@@ -42,7 +43,7 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
 
   it 'answers the connector plugin connection as the NATS wrapper' do
     wrapper = Object.new
-    allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(double('connector', connection: wrapper))
+    allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(instance_double(MCollective::Connector::Nats, connection: wrapper))
 
     expect(connection.nats_wrapper).to be(wrapper)
   end

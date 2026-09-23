@@ -176,7 +176,7 @@ RSpec.describe 'the file_transfer agent mkdir action' do
     reply = run_agent('mkdir', { 'path' => File.join(parent, 'child') })
 
     expect(reply.statuscode).to eq(1)
-    expect(reply.statusmsg).to match(/Permission denied/)
+    expect(reply.statusmsg).to include('Permission denied')
     expect(File.exist?(File.join(parent, 'child'))).to be(false)
   end
 end

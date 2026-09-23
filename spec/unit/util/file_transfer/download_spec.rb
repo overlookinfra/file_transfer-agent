@@ -122,7 +122,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(log.once_ids).not_to include('file_transfer_download_batch_bounded')
     end
 
-    context 'and a batch size of three' do
+    context 'with a batch size of three' do
       let(:client_options) { { download_batch_size: 3 } }
 
       it 'reduces the batch to two with a warning naming the broker' do

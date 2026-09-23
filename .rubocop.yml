@@ -1,7 +1,8 @@
 ---
-require:
+plugins:
   - rubocop-performance
   - rubocop-rake
+  - rubocop-rspec
 
 AllCops:
   TargetRubyVersion: 3.2
@@ -25,6 +26,34 @@ Metrics:
   Enabled: false
 
 Performance/CollectionLiteralInLoop:
+  Enabled: false
+
+# The agent is a script and the DDL a data file, so these specs describe
+# them by name rather than by a class.
+RSpec/DescribeClass:
+  Exclude:
+    - 'spec/unit/agent/**/*'
+    - 'spec/unit/ddl_spec.rb'
+
+RSpec/ExampleLength:
+  Enabled: false
+
+RSpec/IndexedLet:
+  Enabled: false
+
+RSpec/MessageSpies:
+  Enabled: false
+
+RSpec/MultipleExpectations:
+  Enabled: false
+
+RSpec/MultipleMemoizedHelpers:
+  Enabled: false
+
+RSpec/SpecFilePathFormat:
+  Enabled: false
+
+RSpec/StubbedMock:
   Enabled: false
 
 Style/ClassAndModuleChildren:

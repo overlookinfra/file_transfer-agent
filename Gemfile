@@ -6,6 +6,7 @@ group :rubocop do
   gem 'rubocop', '~> 1.86.0'
   gem 'rubocop-performance'
   gem 'rubocop-rake'
+  gem 'rubocop-rspec'
 end
 
 group :test do
