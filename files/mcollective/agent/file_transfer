@@ -31,14 +31,15 @@ module FileTransfer
   DEFAULT_STALE_AFTER = 86_400 # 24 hours
   LIST_DEFAULT_LIMIT = 1000
   LIST_MAX_LIMIT = 2000
-  # The most one get reply may hold, 64 MiB. A process handles one request
-  # and the caller sizes chunks to the broker's limit, so no honest request
-  # comes near this. It exists because a caller is not trusted to be sane,
-  # and a get asking for an absurd max_bytes would otherwise read a whole
-  # file into memory. put's data is bounded by the DDL's maxlength, the same
-  # number, since the server only runs a regex on an input whose maxlength
-  # is non-zero.
-  MAX_CHUNK_BYTES = 67_108_864
+  # The most one get reply may carry, 48 MiB of content, which is 64 MiB
+  # once base64 encoded. That is the largest payload NATS documents and the
+  # maxlength the DDL gives put's data, so both directions share one
+  # ceiling. A caller sizes its requests to the broker's real limit, far
+  # below this. The cap exists because the Choria server reads every reply
+  # file whole before publishing it, so a get for more than any broker
+  # could carry would only cost the node and the server memory for a reply
+  # that can never be delivered.
+  MAX_GET_BYTES = 50_331_648
   READ_BLOCK = 65_536
 
   OK = 0
@@ -177,7 +178,7 @@ module FileTransfer
       path = path_input('path')
       offset = integer_input('offset')
       max_bytes = integer_input('max_bytes')
-      max_bytes = MAX_CHUNK_BYTES if max_bytes > MAX_CHUNK_BYTES
+      max_bytes = MAX_GET_BYTES if max_bytes > MAX_GET_BYTES
 
       stat, content = open_regular_file(path) do |file|
         file.seek(offset)
