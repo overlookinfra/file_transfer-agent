@@ -122,8 +122,10 @@ mco file_transfer download /var/log/app.log /tmp/logs -F role=web
 ```
 
 `upload` sends a file or directory tree to the destination on every matched
-node. `download` fetches the source from every matched node into
-`DIRECTORY/<identity>`. The usual filters select the nodes, `--timeout` is
+node. `download` fetches the source from every matched node into a directory
+under `DIRECTORY` named after the node, such as
+`DIRECTORY/web1.example.net/app.log`. The usual filters select the nodes,
+`--timeout` is
 the wait for every node's reply to one chunk (5 seconds by default), and
 `--chunk-size`, `--download-group-size`, and `--keep-session` map onto the
 client arguments above. The exit code is 0 when every node succeeded, 2 when

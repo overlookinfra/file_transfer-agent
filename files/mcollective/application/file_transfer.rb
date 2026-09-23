@@ -15,18 +15,20 @@ module MCollective
         mco file_transfer [OPTIONS] [FILTERS] download SOURCE DIRECTORY
 
         upload sends a local file or directory tree to DESTINATION on every node.
-        download fetches SOURCE from every node into DIRECTORY/<identity>.
-        The --timeout option is the wait for every node's reply to one chunk.
+        download fetches SOURCE from every node into a directory under DIRECTORY
+        named after the node, such as DIRECTORY/web1.example.net/app.log.
       END_OF_USAGE
 
       option :chunk_size,
         arguments: ['--chunk-size BYTES'],
-        description: 'The most file content one request carries, before the broker limit lowers it',
+        description: 'Upper bound on the bytes of file content per request, 524288 by default. The chunk sent is the smaller of ' \
+                     'this and what the broker message size limit leaves for content once base64 and the request envelope ' \
+                     'are accounted for, about 38 percent of that limit',
         type: Integer
 
       option :download_group_size,
         arguments: ['--download-group-size NODES'],
-        description: 'How many nodes one download round asks at once',
+        description: 'How many nodes a download fetches from at once, 32 by default',
         type: Integer
 
       option :keep_session,
