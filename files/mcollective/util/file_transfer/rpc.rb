@@ -92,7 +92,16 @@ module MCollective
         # wrapper to hook the block still runs, after a warning that the
         # guard is off.
         def guarding(limit)
-          install_guard
+          begin
+            wrapper = @connection.nats_wrapper
+            if wrapper.class.method_defined?(:publish)
+              PublishHook.install(wrapper.class)
+            else
+              guard_unavailable("#{wrapper.inspect} has no publish method")
+            end
+          rescue StandardError => e
+            guard_unavailable("#{e.class}: #{e.message}")
+          end
           PublishHook.limit = limit
           yield
         ensure
@@ -121,15 +130,6 @@ module MCollective
             "The file transfer client could not read the broker's message size limit (#{reason}) and assumes " \
             "#{Sizing::DEFAULT_MAX_PAYLOAD} bytes")
           Sizing::DEFAULT_MAX_PAYLOAD
-        end
-
-        def install_guard
-          wrapper = @connection.nats_wrapper
-          return PublishHook.install(wrapper.class) if wrapper.class.method_defined?(:publish)
-
-          guard_unavailable("#{wrapper.inspect} has no publish method")
-        rescue StandardError => e
-          guard_unavailable("#{e.class}: #{e.message}")
         end
 
         def guard_unavailable(reason)

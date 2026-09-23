@@ -140,7 +140,15 @@ module FileTransfer
       destination = @data['destination'].nil? ? nil : path_input('destination')
       mode = optional_mode('mode')
       raise Failure.new(MISSING_DATA, 'The sha256 input is required with final') if final && digest.nil?
-      raise Failure.new(INVALID_DATA, "The destination must be outside the agent's temporary root") if destination && inside_temp_root?(destination)
+      if destination
+        # Compared by real path, since the root is resolved and a caller
+        # may name it through a link, as /tmp is on macOS. A parent that
+        # does not exist raises here, as the delivery would.
+        parent = File.realpath(File.dirname(destination))
+        if parent == temp_root || parent.start_with?("#{temp_root}/")
+          raise Failure.new(INVALID_DATA, "The destination must be outside the agent's temporary root")
+        end
+      end
 
       content = decode_chunk(string_input('data'))
       path = File.join(session, name)
@@ -163,12 +171,11 @@ module FileTransfer
             'bytes' => content.bytesize, 'size' => size, 'sha256' => actual)
         end
         file.chmod(mode) if mode
-        file_mode = file.stat.mode & 0o7777
       ensure
         file.close
       end
 
-      deliver(path, destination, file_mode) if destination
+      deliver(path, destination) if destination
       { 'bytes' => content.bytesize, 'size' => size, 'sha256' => actual }
     end
 
@@ -263,15 +270,6 @@ module FileTransfer
       end
 
       @temp_root = resolved
-    end
-
-    # Whether the destination's directory lies under the temp root, compared
-    # by real path, since the root is resolved and a caller may name it
-    # through a link, as /tmp is on macOS. A directory that does not exist
-    # raises here, as the delivery would.
-    def inside_temp_root?(destination)
-      parent = File.realpath(File.dirname(destination))
-      parent == temp_root || parent.start_with?("#{temp_root}/")
     end
 
     def session_path(session)
@@ -393,47 +391,47 @@ module FileTransfer
       end
     end
 
-    def deliver(path, destination, mode)
+    # Renames the verified file onto the destination, which replaces an
+    # existing file in one step on the same filesystem. Errno::EXDEV happens
+    # when trying to rename to a different filesystem. In this case,
+    # a plain move would copy straight into the destination, where a reader
+    # could see a half-written file, so the copy lands under a private name
+    # of fixed length beside the destination first, keeping the session
+    # file's mode, and the last step is still a rename. The copy is removed
+    # whenever that rename did not happen, a signal included.
+    def deliver(path, destination)
       File.rename(path, destination)
     rescue Errno::EXDEV
-      copy_beside(path, destination, mode)
-      File.unlink(path)
-    end
-
-    # Copies the verified file into the destination's directory under a
-    # private name of fixed length, created exclusively without following
-    # links, then renames it into place. The copy is removed whenever the
-    # rename did not happen, a signal included. Only a SIGKILL can leave it
-    # behind.
-    def copy_beside(path, destination, mode)
       staging = File.join(File.dirname(destination), ".file_transfer-#{SecureRandom.hex(8)}")
       renamed = false
-      File.open(staging, File::WRONLY | File::CREAT | File::EXCL | NOFOLLOW | File::BINARY, 0o600) do |copy|
-        File.open(path, File::RDONLY | NOFOLLOW | File::BINARY) { |source| IO.copy_stream(source, copy) }
-        copy.chmod(mode)
+      begin
+        FileUtils.cp(path, staging, preserve: true)
+        File.rename(staging, destination)
+        renamed = true
+      ensure
+        FileUtils.rm_f(staging) unless renamed
       end
-      File.rename(staging, destination)
-      renamed = true
-    ensure
-      FileUtils.rm_f(staging) unless renamed
+      File.unlink(path)
     end
 
     # Paths
 
+    # What is at the path, or nil when nothing is. A symbolic link is
+    # described by what it points at, so a caller sees a linked directory as
+    # a directory and can decide not to walk into it, and a dangling link
+    # by itself, as type other.
     def describe(path)
       lstat = File.lstat(path)
-      stat = lstat.symlink? ? target_stat(path, lstat) : lstat
+      stat = begin
+        File.stat(path)
+      rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP
+        lstat
+      end
       type = ['file', 'directory'].include?(stat.ftype) ? stat.ftype : 'other'
       { 'type' => type, 'symlink' => lstat.symlink?, 'size' => stat.size,
         'mode' => format('%04o', stat.mode & 0o7777), 'mtime' => stat.mtime.to_i }
     rescue Errno::ENOENT, Errno::ENOTDIR
       nil
-    end
-
-    def target_stat(path, lstat)
-      File.stat(path)
-    rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP
-      lstat
     end
 
     # Inputs
@@ -500,19 +498,18 @@ module FileTransfer
     def validated_name(name)
       components = name.valid_encoding? ? name.split('/', -1) : []
       valid = !components.empty? && components.all? do |component|
-        !component.empty? && component != '.' && component != '..' && !component.include?('\\') &&
-          !component.match?(/[[:cntrl:]]/) && (!WINDOWS || windows_name?(component))
+        !component.empty? &&
+          component != '.' &&
+          component != '..' &&
+          !component.include?('\\') &&
+          !component.match?(/[[:cntrl:]]/) &&
+          !(WINDOWS && (component.include?(':') || component.match?(WINDOWS_RESERVED_NAMES) || component.end_with?('.', ' ')))
       end
       return name if valid
 
       raise Failure.new(INVALID_DATA, 'The name must be a relative path whose components are not empty, ., or .., ' \
                                       'without backslashes or control characters, and on Windows without colons, ' \
                                       'device names, or trailing dots or spaces')
-    end
-
-    # A component Windows would keep as an ordinary file name.
-    def windows_name?(component)
-      !component.include?(':') && !component.match?(WINDOWS_RESERVED_NAMES) && !component.end_with?('.', ' ')
     end
   end
 
