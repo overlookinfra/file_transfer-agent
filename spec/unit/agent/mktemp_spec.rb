@@ -45,7 +45,7 @@ RSpec.describe 'the file_transfer agent mktemp action' do
       File.write(File.join(session_path, 'chunk.bin'), 'planted')
 
       expect(reply.statuscode).to eq(1)
-      expect(reply.statusmsg).to include(session_path, 'already exists')
+      expect(reply.statusmsg).to include(session_path, 'File exists')
       expect(reply.stdout).to eq('')
       expect(mode_of(session_path)).to eq('0755')
       expect(File.read(File.join(session_path, 'chunk.bin'))).to eq('planted')
@@ -55,7 +55,7 @@ RSpec.describe 'the file_transfer agent mktemp action' do
       File.write(session_path, 'planted')
 
       expect(reply.statuscode).to eq(1)
-      expect(reply.statusmsg).to include(session_path, 'already exists')
+      expect(reply.statusmsg).to include(session_path, 'File exists')
       expect(File.file?(session_path)).to be(true)
       expect(File.read(session_path)).to eq('planted')
     end
@@ -67,7 +67,7 @@ RSpec.describe 'the file_transfer agent mktemp action' do
       File.symlink(target, session_path)
 
       expect(reply.statuscode).to eq(1)
-      expect(reply.statusmsg).to include(session_path, 'already exists')
+      expect(reply.statusmsg).to include(session_path, 'File exists')
       expect(File.symlink?(session_path)).to be(true)
       expect(File.readlink(session_path)).to eq(target)
       expect(File.read(File.join(target, 'kept'))).to eq('planted')

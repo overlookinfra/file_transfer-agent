@@ -104,7 +104,8 @@ module MCollective
             final
           rescue SystemCallError => e
             FileUtils.rm_f(beside)
-            transfer.fail(identity => Outcome.failure(identity, :transfer_failed, "#{final} could not be written from #{identity}: #{e.message}"))
+            transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
+              "#{final} could not be written from #{identity}: #{e.class}: #{e.message}"))
             nil
           end
         end
@@ -163,7 +164,9 @@ module MCollective
                 # the rest of the round.
                 result[:data].delete(:data)
               rescue StandardError => e
-                write_errors[identity] = Outcome.failure(identity, :transfer_failed, "Writing #{remote} from #{identity} failed: #{e.message}")
+                @logger.debug(e.backtrace.join("\n")) if e.backtrace
+                write_errors[identity] = Outcome.failure(identity, :transfer_failed,
+                  "Writing #{remote} from #{identity} failed: #{e.class}: #{e.message}")
               end
             end
             collected
@@ -258,7 +261,8 @@ module MCollective
               begin
                 FileUtils.mkdir_p(local)
               rescue SystemCallError => e
-                transfer.fail(identity => Outcome.failure(identity, :transfer_failed, "#{local} could not be created for #{identity}: #{e.message}"))
+                transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
+                  "#{local} could not be created for #{identity}: #{e.class}: #{e.message}"))
                 next
               end
               delivered[identity] ||= local

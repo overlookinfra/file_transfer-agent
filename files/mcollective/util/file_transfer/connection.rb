@@ -5,14 +5,13 @@ module MCollective
     module FileTransfer
       # The NATS wrapper every request is published through, or nil when
       # the connector does not expose one. The connector is a process-wide
-      # singleton, so this is the same object for every RPC client.
+      # singleton, so this is the same object for every RPC client. Raises
+      # when no connector plugin is loaded at all.
       #
       # @return [MCollective::Util::NatsWrapper, nil]
       def self.nats_wrapper
         connector = PluginManager['connector_plugin']
         connector.respond_to?(:connection) ? connector.connection : nil
-      rescue StandardError
-        nil
       end
 
       # Builds one RPC client per call from an options hash, the way an mco

@@ -261,10 +261,11 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
   context 'when the NATS wrapper is not reachable' do
     let(:connection) { FakeConnection.new(nil) }
 
-    it 'sizes chunks from the default limit and warns once' do
+    it 'sizes chunks from the default limit and warns that the limit and the guard are missing' do
       outcomes = client.upload(source, destination, [node1])
 
-      expect(log.once_ids).to eq(['file_transfer_max_payload_unknown'])
+      expect(log.once_ids.uniq).to contain_exactly('file_transfer_max_payload_unknown', 'file_transfer_guard_unavailable')
+      expect(log.once_messages.first).to include('NoMethodError')
       expect(outcomes[node1]).to be_success
       expect(chunks.map { |call| decoded(call).bytesize }).to eq([16_384, 16_384, 7_232])
     end

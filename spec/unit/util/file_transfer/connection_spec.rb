@@ -47,10 +47,10 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
     expect(connection.nats_wrapper).to be(wrapper)
   end
 
-  it 'answers nil when no connector plugin is loaded' do
+  it 'raises when no connector plugin is loaded' do
     allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_raise('No plugin connector_plugin defined')
 
-    expect(connection.nats_wrapper).to be_nil
+    expect { connection.nats_wrapper }.to raise_error(RuntimeError, 'No plugin connector_plugin defined')
   end
 
   it 'answers nil for a connector without a connection' do

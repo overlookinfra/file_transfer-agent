@@ -26,7 +26,7 @@ module MCollective
             end
           rescue SystemCallError => e
             # A source entry that cannot be read, such as a dangling link.
-            transfer.fail(Outcome.failures(transfer.active, :transfer_failed) { "Reading #{source} failed: #{e.message}" })
+            transfer.fail(Outcome.failures(transfer.active, :transfer_failed) { "Reading #{source} failed: #{e.class}: #{e.message}" })
           end
           transfer.outcomes { |identity| landing[identity] }
         end

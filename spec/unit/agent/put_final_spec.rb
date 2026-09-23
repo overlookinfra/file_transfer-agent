@@ -189,7 +189,7 @@ RSpec.describe 'file_transfer put final chunk' do
       reply = run_agent('put', final_chunk(destination: missing))
 
       expect(reply.statuscode).to eq(1)
-      expect(reply.statusmsg).to include(missing)
+      expect(reply.statusmsg).to include('Errno::ENOENT', File.dirname(missing))
       expect(Dir.exist?(File.dirname(missing))).to be(false)
     end
 

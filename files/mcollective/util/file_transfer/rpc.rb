@@ -70,28 +70,29 @@ module MCollective
           response
         rescue StandardError => e
           @logger.warn("#{context} RPC call failed: #{e.class}: #{e.message}")
-          errors = Outcome.failures(identities, :rpc_failed) { |identity| "#{context} failed on #{identity}: #{e.message}" }
+          @logger.debug(e.backtrace.join("\n")) if e.backtrace
+          errors = Outcome.failures(identities, :rpc_failed) { |identity| "#{context} failed on #{identity}: #{e.class}: #{e.message}" }
           empty_response.merge(errors: errors, rpc_failed: true)
         end
 
         # The broker's advertised payload limit, or the default with a
-        # warning when the connector does not expose one.
+        # warning naming why it could not be read.
         def max_payload
-          client = @connection.nats_wrapper&.instance_variable_get(:@client)
-          limit = client.server_info[:max_payload] if client.respond_to?(:server_info) && client.server_info.is_a?(Hash)
+          limit = @connection.nats_wrapper.instance_variable_get(:@client).server_info[:max_payload]
           return limit if limit.is_a?(Integer) && limit.positive?
 
-          @logger.warn_once('file_transfer_max_payload_unknown',
-            "The file transfer client could not read the broker's message size limit and assumes #{Sizing::DEFAULT_MAX_PAYLOAD} bytes")
-          Sizing::DEFAULT_MAX_PAYLOAD
+          unknown_max_payload("the server info says #{limit.inspect}")
+        rescue StandardError => e
+          unknown_max_payload("#{e.class}: #{e.message}")
         end
 
         # Runs the block with the publish guard set to the limit, so a
         # message over it raises PayloadTooLarge before it leaves the client
-        # instead of making the broker close the connection.
+        # instead of making the broker close the connection. Without a
+        # wrapper to hook the block still runs, after a warning that the
+        # guard is off.
         def guarding(limit)
-          wrapper = @connection.nats_wrapper
-          PublishHook.install(wrapper.class) if wrapper.class.method_defined?(:publish)
+          install_guard
           PublishHook.limit = limit
           yield
         ensure
@@ -114,6 +115,28 @@ module MCollective
         end
 
         private
+
+        def unknown_max_payload(reason)
+          @logger.warn_once('file_transfer_max_payload_unknown',
+            "The file transfer client could not read the broker's message size limit (#{reason}) and assumes " \
+            "#{Sizing::DEFAULT_MAX_PAYLOAD} bytes")
+          Sizing::DEFAULT_MAX_PAYLOAD
+        end
+
+        def install_guard
+          wrapper = @connection.nats_wrapper
+          return PublishHook.install(wrapper.class) if wrapper.class.method_defined?(:publish)
+
+          guard_unavailable("#{wrapper.inspect} has no publish method")
+        rescue StandardError => e
+          guard_unavailable("#{e.class}: #{e.message}")
+        end
+
+        def guard_unavailable(reason)
+          @logger.warn_once('file_transfer_guard_unavailable',
+            "The file transfer client cannot check its requests against the broker's message size limit (#{reason}), " \
+            'so a request over it would drop the connection instead of failing')
+        end
 
         # The first reply per identity, from the identities addressed only.
         def index_by_sender(results, identities, context)

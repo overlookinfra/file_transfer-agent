@@ -69,15 +69,16 @@ RSpec.describe 'the file_transfer protocol' do
       expect(reply.data).to be_empty
     end
 
-    it 'reports a request file that is not JSON as UnknownError with one line on stderr' do
+    it 'reports a request file that is not JSON as UnknownError with the error and its backtrace on stderr' do
       reply = run_agent('get', {}, request_body: 'this is not a request')
 
       expect(reply.exitstatus).to eq(0)
       expect(reply.statuscode).to eq(5)
       expect(reply.statusmsg).to start_with('JSON::ParserError:')
       expect(reply.data).to eq({})
-      expect(reply.stderr.lines.length).to eq(1)
       expect(reply.stderr).to start_with('file_transfer: JSON::ParserError:')
+      expect(reply.stderr.lines.length).to be > 1
+      expect(reply.stderr.lines[1]).to include('.rb:')
     end
 
     it 'answers a request whose data is a string instead of an object' do

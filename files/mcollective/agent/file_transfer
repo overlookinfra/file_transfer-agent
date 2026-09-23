@@ -104,8 +104,9 @@ module FileTransfer
     # asked of the filesystem, such as a parent that does not exist, a
     # permission, a full or read-only filesystem, or a name too long. Those
     # are the caller's problem to act on, so they answer Aborted with the
-    # system's message. Any other exception is a bug in the agent and
-    # answers UnknownError with its class, logged for the server.
+    # error's class and the system's message. Any other exception is a bug
+    # in the agent and answers UnknownError with its class and message,
+    # logged for the server with its backtrace.
     def reply
       raise Failure.new(UNKNOWN_ACTION, "Unknown action #{@action.inspect}") unless ACTIONS.include?(@action)
 
@@ -113,9 +114,9 @@ module FileTransfer
     rescue Failure => e
       { 'statuscode' => e.statuscode, 'statusmsg' => e.message.scrub, 'data' => e.data }
     rescue SystemCallError => e
-      { 'statuscode' => ABORTED, 'statusmsg' => e.message.scrub, 'data' => {} }
+      { 'statuscode' => ABORTED, 'statusmsg' => "#{e.class}: #{e.message}".scrub, 'data' => {} }
     rescue StandardError => e
-      warn "file_transfer #{@action}: #{e.class}: #{e.message}"
+      warn "file_transfer #{@action}: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}"
       { 'statuscode' => UNKNOWN_ERROR, 'statusmsg' => "#{e.class}: #{e.message}".scrub, 'data' => {} }
     end
 
@@ -124,11 +125,7 @@ module FileTransfer
     def mktemp
       path = session_path(string_input('session'))
       seconds = stale_after
-      begin
-        Dir.mkdir(path, 0o700)
-      rescue Errno::EEXIST
-        raise Failure.new(ABORTED, "#{path} already exists")
-      end
+      Dir.mkdir(path, 0o700)
       { 'path' => path, 'swept' => sweep_stale_sessions(temp_root, File.basename(path), seconds) }
     end
 
@@ -256,8 +253,8 @@ module FileTransfer
       begin
         resolved = File.realpath(File.expand_path(root))
         stat = File.stat(resolved)
-      rescue SystemCallError
-        raise Failure.new(ABORTED, "The tmpdir setting #{root} is not a directory the agent can use")
+      rescue SystemCallError => e
+        raise Failure.new(ABORTED, "The tmpdir setting #{root} cannot be used (#{e.class}: #{e.message})")
       end
       usable = stat.directory? && (WINDOWS || ([Process.euid, 0].include?(stat.uid) && (stat.mode.nobits?(0o022) || stat.sticky?)))
       unless usable
@@ -271,12 +268,10 @@ module FileTransfer
     # Whether the destination's directory lies under the temp root, compared
     # by real path, since the root is resolved and a caller may name it
     # through a link, as /tmp is on macOS. A directory that does not exist
-    # is left for the delivery to report.
+    # raises here, as the delivery would.
     def inside_temp_root?(destination)
       parent = File.realpath(File.dirname(destination))
       parent == temp_root || parent.start_with?("#{temp_root}/")
-    rescue SystemCallError
-      false
     end
 
     def session_path(session)
@@ -317,22 +312,23 @@ module FileTransfer
         entry != keep && session_name?(entry) && sweep_session(File.join(root, entry), cutoff)
       end
     rescue StandardError => e
-      warn "file_transfer sweep of #{root} failed: #{e.class}: #{e.message}"
+      warn "file_transfer sweep of #{root} failed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}"
       0
     end
 
     # Removes one session once it is stale. An entry the agent does not
-    # own is passed over.
+    # own is passed over with a note of why.
     def sweep_session(path, cutoff)
       ensure_private_directory(File.lstat(path), path)
       return false unless stale?(path, cutoff)
 
       FileUtils.remove_entry_secure(path)
       true
-    rescue Failure
+    rescue Failure => e
+      warn "file_transfer sweep passed over #{path}: #{e.message}"
       false
     rescue StandardError => e
-      warn "file_transfer sweep of #{path} failed: #{e.class}: #{e.message}"
+      warn "file_transfer sweep of #{path} failed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}"
       false
     end
 
@@ -371,8 +367,8 @@ module FileTransfer
       path = session_file_path(session, name)
       begin
         size = File.size(path)
-      rescue Errno::ENOENT
-        raise Failure.new(INVALID_DATA, "#{name} does not exist in the session, so an earlier chunk was lost")
+      rescue Errno::ENOENT => e
+        raise Failure.new(INVALID_DATA, "#{name} does not exist in the session, so an earlier chunk was lost (#{e.class}: #{e.message})")
       end
       raise Failure.new(INVALID_DATA, "#{name} is #{size} bytes, so a chunk before offset #{offset} was lost") if size < offset
 
@@ -382,8 +378,8 @@ module FileTransfer
     # Chunk data travels base64 encoded in both directions.
     def decode_chunk(data)
       data.unpack1('m0')
-    rescue ArgumentError
-      raise Failure.new(INVALID_DATA, 'The data is not valid base64')
+    rescue ArgumentError => e
+      raise Failure.new(INVALID_DATA, "The data is not valid base64 (#{e.class}: #{e.message})")
     end
 
     # Opens a path for reading and yields it, failing unless it is a regular
@@ -529,7 +525,7 @@ module FileTransfer
             end
     File.write(env.fetch('CHORIA_EXTERNAL_REPLY'), JSON.generate(reply))
   rescue StandardError => e
-    warn "file_transfer: #{e.class}: #{e.message}"
+    warn "file_transfer: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}"
     File.write(env.fetch('CHORIA_EXTERNAL_REPLY'),
       JSON.generate('statuscode' => UNKNOWN_ERROR, 'statusmsg' => "#{e.class}: #{e.message}".scrub, 'data' => {}))
   end

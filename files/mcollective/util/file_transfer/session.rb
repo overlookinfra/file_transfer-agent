@@ -93,6 +93,7 @@ module MCollective
           end
         rescue StandardError => e
           @client.logger.warn("Cleanup of session #{@id} failed: #{e.class}: #{e.message}")
+          @client.logger.debug(e.backtrace.join("\n")) if e.backtrace
         end
       end
     end
