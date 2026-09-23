@@ -2,6 +2,8 @@
 
 require 'digest/sha2'
 require 'fileutils'
+require 'find'
+require 'pathname'
 require 'securerandom'
 require 'tmpdir'
 require_relative 'file_transfer/default_logger'

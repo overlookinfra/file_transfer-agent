@@ -53,27 +53,22 @@ module MCollective
           end
         end
 
-        # Yields every entry of a local tree, parents before their contents.
-        # A symbolic link to a file is sent as the file it points at, and a
-        # symbolic link to a directory is skipped with a warning, so the
-        # walk cannot loop.
+        # Yields every entry of a local tree, parents before their contents,
+        # in the order Find lists them. A symbolic link to a file is sent as
+        # the file it points at. Find does not descend into a symbolic link
+        # to a directory, and the walk skips it with a warning, so it cannot
+        # loop. The source itself is resolved first, so a link to a
+        # directory can still be the source.
         def walk_local_tree(source)
-          queue = [['', source]]
-          until queue.empty?
-            relative, path = queue.shift
-            stat = File.stat(path)
-            yield(relative, path, stat)
-            next unless stat.directory?
-
-            Dir.children(path).sort.each do |child|
-              child_path = File.join(path, child)
-              if File.symlink?(child_path) && File.directory?(child_path)
-                @logger.warn("Skipping #{child_path}, a symbolic link to a directory")
-                next
-              end
-
-              queue.push([relative.empty? ? child : File.join(relative, child), child_path])
+          root = File.realpath(source)
+          Find.find(root, ignore_error: false) do |path|
+            if File.symlink?(path) && File.directory?(path)
+              @logger.warn("Skipping #{path}, a symbolic link to a directory")
+              next
             end
+
+            relative = Pathname.new(path).relative_path_from(Pathname.new(root)).to_s
+            yield(relative == '.' ? '' : relative, path, File.stat(path))
           end
         end
 

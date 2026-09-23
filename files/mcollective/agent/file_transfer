@@ -40,7 +40,6 @@ module FileTransfer
   # could carry would only cost the node and the server memory for a reply
   # that can never be delivered.
   MAX_GET_BYTES = 50_331_648
-  READ_BLOCK = 65_536
 
   OK = 0
   ABORTED = 1
@@ -151,7 +150,7 @@ module FileTransfer
         # The last chunk verifies the whole file and sets its mode. The
         # file then leaves the session for the destination, or stays there
         # for a caller that uses it in place and removes it with cleanup.
-        actual = digest_of(file)
+        actual = Digest::SHA256.file(path).hexdigest
         unless actual == digest
           raise Failure.new(ABORTED, "Checksum mismatch for #{name}: expected #{digest}, got #{actual}",
             'bytes' => content.bytesize, 'size' => size, 'sha256' => actual)
@@ -198,7 +197,7 @@ module FileTransfer
                  'sha256' => nil }
       end
 
-      sha256 = checksum && description['type'] == 'file' ? open_regular_file(path) { |file| digest_of(file) } : nil
+      sha256 = checksum && description['type'] == 'file' ? Digest::SHA256.file(path).hexdigest : nil
       description.merge('exists' => true, 'sha256' => sha256)
     end
 
@@ -219,35 +218,24 @@ module FileTransfer
       { 'entries' => entries, 'total' => names.length - (page.length - entries.length) }
     end
 
+    # The missing parents come from mkdir_p and the directory itself from
+    # one mkdir, whose outcome says whether this call created it. With a
+    # mode, every directory created here is chmod-ed after its mkdir, which
+    # is what makes setuid and setgid bits arrive, since the kernel drops
+    # them from the mode given to mkdir. Without a mode the umask applies.
     def mkdir
       path = path_input('path')
       mode = optional_mode('mode')
+      FileUtils.mkdir_p(File.dirname(path), mode: mode)
+      begin
+        Dir.mkdir(path)
+      rescue Errno::EEXIST
+        raise unless File.directory?(path)
 
-      missing = []
-      current = path
-      until File.directory?(current)
-        raise Failure.new(ABORTED, "#{current} exists and is not a directory") if File.exist?(current)
-
-        missing.unshift(current)
-        parent = File.dirname(current)
-        break if parent == current
-
-        current = parent
+        return { 'created' => false }
       end
-      create_directories(missing, mode)
-      { 'created' => !missing.empty? }
-    end
-
-    # Without a mode, the umask applies. With one, each directory is created
-    # and then changed through a handle opened without following links, so
-    # the mode lands only on the directory this request made. The kernel
-    # drops setuid and setgid from the mode given to mkdir, so the chmod is
-    # what makes a four-digit mode arrive as requested.
-    def create_directories(paths, mode)
-      paths.each do |dir|
-        Dir.mkdir(dir)
-        File.open(dir, File::RDONLY | File::NOFOLLOW) { |handle| handle.chmod(mode) } if mode
-      end
+      File.chmod(mode, path) if mode
+      { 'created' => true }
     end
 
     # Sessions
@@ -383,15 +371,6 @@ module FileTransfer
       data.unpack1('m0')
     rescue ArgumentError
       raise Failure.new(INVALID_DATA, 'The data is not valid base64')
-    end
-
-    def digest_of(file)
-      file.rewind
-      digest = Digest::SHA256.new
-      while (block = file.read(READ_BLOCK))
-        digest.update(block)
-      end
-      digest.hexdigest
     end
 
     # Opens a path for reading and yields it, failing unless it is a regular

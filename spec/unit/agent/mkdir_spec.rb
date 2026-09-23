@@ -84,7 +84,7 @@ RSpec.describe 'the file_transfer agent mkdir action' do
     reply = run_agent('mkdir', { 'path' => target })
 
     expect(reply.statuscode).to eq(1)
-    expect(reply.statusmsg).to include("#{target} exists and is not a directory")
+    expect(reply.statusmsg).to include('File exists', target)
     expect(reply.data).to be_empty
     expect(File.file?(target)).to be(true)
     expect(File.binread(target)).to eq('contents')
@@ -99,7 +99,7 @@ RSpec.describe 'the file_transfer agent mkdir action' do
     reply = run_agent('mkdir', { 'path' => File.join(ancestor, 'child', 'leaf') })
 
     expect(reply.statuscode).to eq(1)
-    expect(reply.statusmsg).to include("#{ancestor} exists and is not a directory")
+    expect(reply.statusmsg).to include('File exists', ancestor)
     expect(File.file?(ancestor)).to be(true)
     expect(File.binread(ancestor)).to eq('contents')
     expect(Dir.children(root)).to eq(['ancestor'])
