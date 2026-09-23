@@ -169,7 +169,9 @@ The module installs the agent, its DDL files, and its policy file through
 restart.
 
 The agent runs on Linux, macOS, and Windows nodes under the Puppet agent's
-Ruby. On POSIX nodes the server runs the script through its shebang,
+Ruby. The agent, the client library, and the command need Ruby 3.2 or
+later, and use nothing that Ruby 4.0 removed or moved out of its default
+gems. On POSIX nodes the server runs the script through its shebang,
 `/opt/puppetlabs/puppet/bin/ruby`. On Windows the server resolves the
 agent's name through `PATHEXT`, so the module installs `file_transfer.bat`
 beside the script, which runs it with the Puppet agent's `ruby.exe` at its
