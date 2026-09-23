@@ -41,6 +41,18 @@ module FileTransfer
   # that can never be delivered.
   MAX_GET_BYTES = 50_331_648
 
+  # Ruby defines File::NOFOLLOW only where open(2) has O_NOFOLLOW, which
+  # Windows does not, so there the flag is absent and every open follows
+  # links, as the rest of Windows does.
+  NOFOLLOW = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0
+  # Windows reports every directory as 0755 and every owner as uid 0, so the
+  # POSIX ownership and mode checks say nothing there and the access control
+  # lists on the temp root stand in for them. Names have rules of their own
+  # there too, since a device name or a colon in a component would send a
+  # write somewhere other than a file in the session.
+  WINDOWS = Gem.win_platform?
+  WINDOWS_RESERVED_NAMES = /\A(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?\z/i
+
   OK = 0
   ABORTED = 1
   UNKNOWN_ACTION = 2
@@ -131,9 +143,7 @@ module FileTransfer
       destination = @data['destination'].nil? ? nil : path_input('destination')
       mode = optional_mode('mode')
       raise Failure.new(MISSING_DATA, 'The sha256 input is required with final') if final && digest.nil?
-      if destination && (destination == temp_root || destination.start_with?("#{temp_root}/"))
-        raise Failure.new(INVALID_DATA, "The destination must be outside the agent's temporary root")
-      end
+      raise Failure.new(INVALID_DATA, "The destination must be outside the agent's temporary root") if destination && inside_temp_root?(destination)
 
       content = decode_chunk(string_input('data'))
       path = File.join(session, name)
@@ -259,13 +269,24 @@ module FileTransfer
       rescue SystemCallError
         raise Failure.new(ABORTED, "The tmpdir setting #{root} is not a directory the agent can use")
       end
-      usable = stat.directory? && [Process.euid, 0].include?(stat.uid) && (stat.mode.nobits?(0o022) || stat.sticky?)
+      usable = stat.directory? && (WINDOWS || ([Process.euid, 0].include?(stat.uid) && (stat.mode.nobits?(0o022) || stat.sticky?)))
       unless usable
         raise Failure.new(ABORTED, "The tmpdir setting #{root} is not a directory owned by the agent's user or root " \
                                    'that is unwritable by others or has the sticky bit')
       end
 
       @temp_root = resolved
+    end
+
+    # Whether the destination's directory lies under the temp root, compared
+    # by real path, since the root is resolved and a caller may name it
+    # through a link, as /tmp is on macOS. A directory that does not exist
+    # is left for the delivery to report.
+    def inside_temp_root?(destination)
+      parent = File.realpath(File.dirname(destination))
+      parent == temp_root || parent.start_with?("#{temp_root}/")
+    rescue SystemCallError
+      false
     end
 
     def session_path(session)
@@ -291,6 +312,8 @@ module FileTransfer
     def ensure_private_directory(stat, path)
       raise Failure.new(ABORTED, "#{path} is a symbolic link") if stat.symlink?
       raise Failure.new(ABORTED, "#{path} is not a directory") unless stat.directory?
+      return if WINDOWS
+
       raise Failure.new(ABORTED, "#{path} is not owned by the agent's user") unless stat.uid == Process.euid
       raise Failure.new(ABORTED, "#{path} is accessible to other users") unless stat.mode.nobits?(0o077)
     end
@@ -351,7 +374,7 @@ module FileTransfer
     # A first chunk is an exclusive create, since a name is put once per
     # session.
     def create_session_file(session, name)
-      File.new(session_file_path(session, name), File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW | File::BINARY, 0o600)
+      File.new(session_file_path(session, name), File::RDWR | File::CREAT | File::EXCL | NOFOLLOW | File::BINARY, 0o600)
     end
 
     def open_session_file(session, name, offset)
@@ -363,7 +386,7 @@ module FileTransfer
       end
       raise Failure.new(INVALID_DATA, "#{name} is #{size} bytes, so a chunk before offset #{offset} was lost") if size < offset
 
-      File.new(path, File::RDWR | File::NOFOLLOW | File::BINARY)
+      File.new(path, File::RDWR | NOFOLLOW | File::BINARY)
     end
 
     # Chunk data travels base64 encoded in both directions.
@@ -399,8 +422,8 @@ module FileTransfer
     def copy_beside(path, destination, mode)
       staging = File.join(File.dirname(destination), ".file_transfer-#{SecureRandom.hex(8)}")
       renamed = false
-      File.open(staging, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW | File::BINARY, 0o600) do |copy|
-        File.open(path, File::RDONLY | File::NOFOLLOW | File::BINARY) { |source| IO.copy_stream(source, copy) }
+      File.open(staging, File::WRONLY | File::CREAT | File::EXCL | NOFOLLOW | File::BINARY, 0o600) do |copy|
+        File.open(path, File::RDONLY | NOFOLLOW | File::BINARY) { |source| IO.copy_stream(source, copy) }
         copy.chmod(mode)
       end
       File.rename(staging, destination)
@@ -492,12 +515,18 @@ module FileTransfer
       components = name.valid_encoding? ? name.split('/', -1) : []
       valid = !components.empty? && components.all? do |component|
         !component.empty? && component != '.' && component != '..' && !component.include?('\\') &&
-          !component.match?(/[[:cntrl:]]/)
+          !component.match?(/[[:cntrl:]]/) && (!WINDOWS || windows_name?(component))
       end
       return name if valid
 
       raise Failure.new(INVALID_DATA, 'The name must be a relative path whose components are not empty, ., or .., ' \
-                                      'without backslashes or control characters')
+                                      'without backslashes or control characters, and on Windows without colons, ' \
+                                      'device names, or trailing dots or spaces')
+    end
+
+    # A component Windows would keep as an ordinary file name.
+    def windows_name?(component)
+      !component.include?(':') && !component.match?(WINDOWS_RESERVED_NAMES) && !component.end_with?('.', ' ')
     end
   end
 

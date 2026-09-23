@@ -30,6 +30,9 @@ module MCollective
       DDL_TIMEOUT = 120
 
       OUTCOME_KINDS = [:no_response, :rpc_error, :rpc_failed, :transfer_failed, :payload_too_large, :checksum_mismatch].freeze
+      # A name Windows treats as a device rather than a file, with or
+      # without an extension.
+      WINDOWS_RESERVED_NAMES = /\A(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?\z/i
 
       # What a transfer did for one identity. A success carries the path the
       # file landed at, a failure the kind and a message.

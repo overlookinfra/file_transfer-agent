@@ -329,6 +329,17 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(outcomes[node1].message).to include('not a plain file name')
     end
 
+    it 'refuses an entry name Windows would treat as a device when the client runs there' do
+      allow(Gem).to receive(:win_platform?).and_return(true)
+      stub_directory_stats
+      rpc.on(:list) { |_args, names| results_for(names, { entries: [{ name: 'CON.txt', type: 'file', symlink: false }], total: 1 }) }
+
+      outcomes = client.download('/srv/data', destinations.slice(node1))
+
+      expect(outcomes[node1].kind).to eq(:transfer_failed)
+      expect(outcomes[node1].message).to include('not a plain file name')
+    end
+
     it 'fails only the node whose listing has no entries and downloads the rest' do
       stub_flat_tree({ node1 => { 'a.txt' => 'a' }, node2 => { 'a.txt' => 'a' } }, { node1 => 10, node2 => 10 })
       rpc.on(:list) do |_args, names|

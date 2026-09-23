@@ -140,6 +140,16 @@ The module installs the agent, its DDL files, and its policy file through
 `mcollective::module_plugin`. The Choria server picks up the agent without a
 restart.
 
+The agent runs on Linux, macOS, and Windows nodes under the Puppet agent's
+Ruby. On POSIX nodes the server runs the script through its shebang,
+`/opt/puppetlabs/puppet/bin/ruby`. On Windows the server resolves the
+agent's name through `PATHEXT`, so the module installs `file_transfer.bat`
+beside the script, which runs it with the Puppet agent's `ruby.exe` at its
+default path. There the ownership and mode checks POSIX offers do not
+apply and the access control list on the temp root stands in for them,
+and a `name` may not carry a colon, a reserved device name such as `CON`
+or `COM1`, or a trailing dot or space.
+
 ## Configuration
 
 Settings are written to `plugin.d/file_transfer.cfg` on servers:
@@ -151,12 +161,16 @@ mcollective_agent_file_transfer::server_config:
 ```
 
 - `tmpdir`: the root under which the agent creates session directories.
-  Default: Ruby's temp dir, `/tmp` on most nodes. Set it on nodes where
-  `/tmp` is mounted noexec if a caller runs files from a session. The
-  directory must be owned by the user the Choria server runs as or by root,
-  and must not be writable by its group or by others unless it has the
-  sticky bit, since anyone who can rename entries in it could swap a
-  session for a link.
+  Default: Ruby's temp dir, `/tmp` on most POSIX nodes and on Windows the
+  `temp` directory under the Local AppData folder of the account the
+  Choria service runs as, which is a good reason to set it there, for
+  example to `C:/ProgramData/choria/var/file_transfer`. Set it on nodes
+  where `/tmp` is mounted noexec if a caller runs files from a session. On
+  POSIX the directory must be owned by the user the Choria server runs as
+  or by root, and must not be writable by its group or by others unless it
+  has the sticky bit, since anyone who can rename entries in it could swap
+  a session for a link. On Windows its access control list is what keeps
+  other users out.
 - `stale_after`: seconds after which an abandoned session is removed by the
   next `mktemp`. Default 86400. It must exceed the longest time a caller
   keeps a session in use, because a session that is only read from does not

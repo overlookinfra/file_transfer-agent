@@ -307,12 +307,16 @@ module MCollective
         # to be one component on either client platform. A backslash is a
         # separator on Windows, and the agent's own DDL refuses it in a
         # name, so it is refused here too rather than relying on the
-        # containment check to catch what it turns into.
+        # containment check to catch what it turns into. On a Windows
+        # controller a device name, a colon, or a trailing dot or space
+        # would not stay an ordinary file either.
         def plain_name?(name)
           return false unless name.is_a?(String) && !name.empty? && name.valid_encoding?
           return false if ['.', '..'].include?(name)
+          return false if name.match?(%r{[/\\\x00]})
+          return true unless Gem.win_platform?
 
-          !name.match?(%r{[/\\\x00]})
+          !name.include?(':') && !name.match?(WINDOWS_RESERVED_NAMES) && !name.end_with?('.', ' ')
         end
 
         # Every entry of a remote directory per node, paging through list
