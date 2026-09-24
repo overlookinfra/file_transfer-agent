@@ -24,7 +24,7 @@ module MCollective
 
         # A transfer for the identities under the broker's limit.
         def self.start(identities, rpc:, logger:, chunk_size:)
-          sizing = Sizing.new(max_payload: rpc.max_payload, chunk_size: chunk_size, rpc: rpc, identity: identities.first)
+          sizing = Sizing.new(max_payload: rpc.max_payload, chunk_size: chunk_size, rpc: rpc, identity: identities.first, logger: logger)
           logger.debug("File transfer with #{FileTransfer.count(identities)} has #{sizing.summary}")
           new(identities, sizing, logger)
         end

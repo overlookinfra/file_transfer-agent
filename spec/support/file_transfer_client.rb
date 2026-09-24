@@ -134,10 +134,17 @@ module FileTransferClientHelpers
     args[:data].unpack1('m0')
   end
 
-  # The wire model the fake client publishes with: a fixed envelope plus
-  # the expansion base64 twice over gives every content byte.
+  # The wire model of the fake: a signed request is an envelope plus the
+  # base64 data, and the transport adds framing around its outer encoding.
+  # The measurement stub and the fake wrapper's publishing share it, as a
+  # measured and a sent request agree, and a context that overrides
+  # wire_size gives the sent request weight the measurement did not show.
+  def measured_size(args)
+    framing + MCollective::Util::FileTransfer::Sizing.encoded_bytes(envelope + args[:data].bytesize)
+  end
+
   def wire_size(args)
-    envelope + (decoded(args).bytesize * expansion).ceil
+    measured_size(args)
   end
 
   # put publishes through the fake wrapper, so the guard sees the modeled
@@ -192,7 +199,7 @@ RSpec.shared_context 'with a file transfer client' do
   let(:node2) { 'node2.example.com' }
   let(:nodes) { [node1, node2] }
   let(:envelope) { 2_000 }
-  let(:expansion) { 1.84 }
+  let(:framing) { 300 }
   let(:put_calls) { [] }
   let(:workdir) { Dir.mktmpdir('file_transfer-client') }
 
@@ -201,7 +208,9 @@ RSpec.shared_context 'with a file transfer client' do
   # agent's DDL answers a 120 second timeout as the shipped one does. RPC
   # results look their action up in the same DDL, and find no interface.
   before do
-    allow(MCollective::Util::FileTransfer::Connection).to receive(:request_bytes) { |_client, _action, args, _identity| wire_size(args) }
+    allow(MCollective::Util::FileTransfer::Connection).to receive(:request_bytes) do |_client, _action, args, _identity|
+      MCollective::Util::FileTransfer::Connection::Request.new(signed_bytes: envelope + args[:data].bytesize, wire_bytes: measured_size(args))
+    end
     allow(MCollective::DDL).to receive(:new).with(MCollective::Util::FileTransfer::AGENT)
                                             .and_return(instance_double(MCollective::DDL::AgentDDL, meta: { timeout: 120 }, action_interface: {}))
   end

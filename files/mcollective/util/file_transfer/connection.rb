@@ -27,14 +27,22 @@ module MCollective
           connector.respond_to?(:connection) ? connector.connection : nil
         end
 
-        # The bytes the connector would publish for one direct request from
-        # this RPC client to the identity, built like the client and the
-        # connector build a request, and never sent. Used for measuring the
-        # overhead in the message for the chunks we are about to send so we can
-        # size those chunks appropriately.
+        # The lengths of one direct request: the signed request, which the
+        # connector base64 encodes, and the transport message it publishes
+        # with that encoding inside.
+        Request = Data.define(:signed_bytes, :wire_bytes)
+
+        # The lengths of one direct request from this RPC client to the
+        # identity, built like the client and the connector build a request,
+        # and never sent. The body, signing, and headers come from the gem's
+        # own calls; the sequence mirrors RPC::Client#call_agent and the
+        # transport hash mirrors Connector::Nats#publish_connected_directed,
+        # so check those two when the gem changes. Used to measure what a
+        # chunk request weighs on the wire, so chunks can be sized to the
+        # broker's limit.
         #
         # @param client [MCollective::RPC::Client] The client the request would go through
-        # @return [Integer]
+        # @return [Request]
         def self.request_bytes(client, action, args, identity)
           options = client.options
           framing = { agent: client.agent, type: :request, collective: options[:collective], filter: options[:filter], options: options }
@@ -42,9 +50,11 @@ module MCollective
           message.discovered_hosts = [identity]
           message.type = :direct_request
           message.encode!
+          signed_bytes = message.payload.bytesize
           message.base64_encode!
           target = PluginManager['connector_plugin'].target_for(message, identity)
-          { 'protocol' => 'choria:transport:1', 'data' => message.payload, 'headers' => target[:headers] }.to_json.bytesize
+          wire = { 'protocol' => 'choria:transport:1', 'data' => message.payload, 'headers' => target[:headers] }.to_json
+          Request.new(signed_bytes: signed_bytes, wire_bytes: wire.bytesize)
         end
 
         # @param options [Hash] The client options, Util.default_options by default

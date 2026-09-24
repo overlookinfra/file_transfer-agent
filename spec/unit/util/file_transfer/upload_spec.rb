@@ -52,11 +52,12 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(action_calls.map { |call| call[:publish_timeout] }.uniq).to eq([30])
   end
 
-  it 'measures the chunk request once, with a client for one node, after the session and before the chunks' do
+  it 'measures an empty chunk request and the sized one, with a client for one node, after the session and before the chunks' do
     client.upload(source, destination, nodes)
 
-    expect(connection.calls[2]).to eq(agent: 'file_transfer', identities: [node1], timeout: 30, publish_timeout: nil)
-    expect(connection.calls.map { |call| call[:publish_timeout] }).to eq([30, 30, nil, 30, 30, 30, 30])
+    measurement = { agent: 'file_transfer', identities: [node1], timeout: 30, publish_timeout: nil }
+    expect(connection.calls[2..3]).to eq([measurement, measurement])
+    expect(connection.calls.map { |call| call[:publish_timeout] }).to eq([30, 30, nil, nil, 30, 30, 30, 30])
   end
 
   it 'publishes each chunk to as many nodes at once as keep a batch under the memory bound at the broker limit' do
@@ -283,12 +284,6 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       super + (decoded(args).bytesize > 60_000 ? 150_000 : 0)
     end
 
-    before do
-      allow(MCollective::Util::FileTransfer::Connection).to receive(:request_bytes) do |_client, _action, args, _identity|
-        envelope + (decoded(args).bytesize * expansion).ceil
-      end
-    end
-
     it 'fails the node before the chunk leaves the client and names the chunk size as the remedy' do
       big = local_file('big.bin', SecureRandom.random_bytes(70_000))
 
@@ -358,12 +353,6 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       # measurement did not show.
       def wire_size(args)
         super + (args[:destination] == '/opt/app/source.bin' ? 1_000_000 : 0)
-      end
-
-      before do
-        allow(MCollective::Util::FileTransfer::Connection).to receive(:request_bytes) do |_client, _action, args, _identity|
-          envelope + (decoded(args).bytesize * expansion).ceil
-        end
       end
 
       it 'keeps the group whose chunk already landed and fails only the refused one' do

@@ -48,9 +48,9 @@ module MCollective
           response
         end
 
-        # The bytes the connector would publish for one put with these
-        # arguments to the identity, built as the gem builds them and never
-        # sent.
+        # The lengths of the request the connector would publish for one put
+        # with these arguments to the identity, built as the gem builds it
+        # and never sent, see Connection.request_bytes.
         def request_bytes(args, identity)
           @connection.with_client(AGENT, [identity], timeout: @rpc_timeout, publish_timeout: nil) do |client|
             Connection.request_bytes(client, 'put', args, identity)

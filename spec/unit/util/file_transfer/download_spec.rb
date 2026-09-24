@@ -115,11 +115,11 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
   end
 
-  # A reply of a 100 byte file weighs 2184 bytes in the fake's wire model,
-  # so two fit under three quarters of a 6000 byte backlog and a third
+  # A reply of a 100 byte file weighs 3244 bytes in the fake's wire model,
+  # so two fit under three quarters of a 10000 byte backlog and a third
   # does not.
   context 'with replies large enough that three nodes overrun the broker backlog' do
-    before { stub_const('MCollective::Util::FileTransfer::Transfer::BROKER_PENDING_LIMIT', 6_000) }
+    before { stub_const('MCollective::Util::FileTransfer::Transfer::BROKER_PENDING_LIMIT', 10_000) }
 
     let(:node3) { 'node3.example.com' }
     let(:nodes) { [node1, node2, node3] }

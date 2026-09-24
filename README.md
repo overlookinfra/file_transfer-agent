@@ -111,12 +111,17 @@ The arguments of `Client.new`:
 
 Chunks are sized by measurement, not by a model. For every file the
 library builds the request the connector would publish for its final
-chunk, with the gem's own message and security objects and never sent, and
-takes the most content whose request fits the broker's advertised payload
-limit less a five percent reserve, capped by `chunk_size`. A download
-round asks for as much, since a reply carrying the same content weighs
-less than a request: the node signs nothing and sends no certificate. A
-publish guard refuses a request over the limit before it leaves the client
+chunk with no content, with the gem's own message and security objects
+and never sent, which gives the signed request and the transport framing
+as they really are. The content is then what the broker's advertised
+payload limit, less a five percent reserve, leaves room for: base64 puts
+four characters in the signed request for every three content bytes, and
+the connector's outer base64 adds a third again plus an escaped newline
+per sixty characters, so the largest content is arithmetic, capped by
+`chunk_size`. A request of that size is built once more to confirm it. A
+download round asks for as much, since a reply carrying the same content
+weighs less than a request: the node signs nothing and sends no
+certificate. A publish guard refuses a request over the limit before it leaves the client
 and fails those nodes with `payload_too_large`, naming a lower chunk size
 as the remedy. A node that does not answer a chunk is reported as
 `no_response`. Nothing is retried.
