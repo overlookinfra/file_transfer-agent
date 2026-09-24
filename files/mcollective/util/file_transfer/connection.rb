@@ -7,13 +7,16 @@ module MCollective
   module Util
     module FileTransfer
       # Builds one RPC client per call from an options hash, the way an mco
-      # application does, and serializes the calls, because the publish
-      # guard keeps its limit in module state while a call runs. A caller
-      # with its own client handling, such as OpenBolt, gives the Client its
-      # own object with with_client and nats_wrapper instead, and answers
-      # the latter from Connection.nats_wrapper. The class methods take a
-      # client or nothing at all, so a connection of either kind can use
-      # them.
+      # application does, and lets only one call run at a time. PublishHook,
+      # which refuses any outgoing message larger than the broker's size
+      # limit before it is sent, keeps that limit in one place shared by
+      # every call in the process for as long as the call that set it runs,
+      # so a second call running alongside would have its messages checked
+      # against the first call's limit or none. A caller with its own
+      # client handling, such as OpenBolt, gives the Client its own object
+      # with with_client and nats_wrapper instead, and answers the latter
+      # from Connection.nats_wrapper. The class methods take a client or
+      # nothing at all, so a connection of either kind can use them.
       class Connection
         # The NATS wrapper every request is published through, or nil when
         # the connector does not expose one. The connector is a process-wide
