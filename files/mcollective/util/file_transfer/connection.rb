@@ -12,11 +12,9 @@ module MCollective
       # limit before it is sent, keeps that limit in one place shared by
       # every call in the process for as long as the call that set it runs,
       # so a second call running alongside would have its messages checked
-      # against the first call's limit or none. A caller with its own
-      # client handling, such as OpenBolt, gives the Client its own object
-      # with with_client and nats_wrapper instead, and answers the latter
-      # from Connection.nats_wrapper. The class methods take a client or
-      # nothing at all, so a connection of either kind can use them.
+      # against the first call's limit or none. A caller whose process
+      # serializes its other RPC calls with a lock of its own, as OpenBolt
+      # does, passes that lock as the mutex and the options its clients use.
       class Connection
         # The NATS wrapper every request is published through, or nil when
         # the connector does not expose one. The connector is a process-wide
@@ -30,8 +28,10 @@ module MCollective
         end
 
         # The bytes the connector would publish for one direct request from
-        # this RPC client to the identity, built as the client and the
-        # connector build a request and never sent.
+        # this RPC client to the identity, built like the client and the
+        # connector build a request, and never sent. Used for measuring the
+        # overhead in the message for the chunks we are about to send so we can
+        # size those chunks appropriately.
         #
         # @param client [MCollective::RPC::Client] The client the request would go through
         # @return [Integer]
@@ -48,9 +48,11 @@ module MCollective
         end
 
         # @param options [Hash] The client options, Util.default_options by default
-        def initialize(options = Util.default_options)
+        # @param mutex [Mutex] The lock every call runs under, a caller's own when its process
+        #   has other RPC calls to serialize with
+        def initialize(options = Util.default_options, mutex: Mutex.new)
           @options = options
-          @mutex = Mutex.new
+          @mutex = mutex
         end
 
         # Yields an RPC client for the agent that addresses the identities

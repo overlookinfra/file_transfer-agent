@@ -88,12 +88,10 @@ file into it without a destination and answers the nodes that received it,
 
 The arguments of `Client.new`:
 
-- `connection`: any object with `with_client(agent, identities, timeout:,
-  publish_timeout:)`, which yields an `MCollective::RPC::Client` addressing
-  those identities directly and serializes the calls, and `nats_wrapper`,
-  the connector's `MCollective::Util::NatsWrapper` or nil, which
-  `Connection.nats_wrapper` answers for any caller. `Connection` builds one
-  from a client options hash.
+- `connection`: a `Connection`, built from a client options hash, the
+  parsed mco options by default, and the mutex every call runs under, a
+  caller's own lock when its process has other RPC calls to serialize
+  with, as OpenBolt passes its transport's.
 - `logger`: any object with `debug(message)`, `warn(message)`, and
   `warn_once(id, message)`. The default writes to `MCollective::Log`.
 - `rpc_timeout`: seconds to wait for every node's reply to one call, and to

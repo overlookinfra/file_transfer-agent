@@ -57,7 +57,7 @@ module MCollective
       class Client
         attr_reader :rpc, :logger, :chunk_size, :upload_batch_size, :download_batch_size
 
-        # @param connection [#with_client, #nats_wrapper] Builds the RPC clients, see Connection
+        # @param connection [Connection] Builds the RPC clients from a caller's options and lock
         # @param logger [#debug, #warn, #warn_once] Receives the log lines, see DefaultLogger
         # @param rpc_timeout [Numeric] Seconds to wait for every node's reply to one call, and to
         #   publish one call to every node

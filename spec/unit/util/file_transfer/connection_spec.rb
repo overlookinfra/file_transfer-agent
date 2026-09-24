@@ -59,4 +59,15 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
 
     expect(connection.nats_wrapper).to be_nil
   end
+
+  it 'runs every call under the mutex it is given, so a caller can share its own lock' do
+    mutex = Mutex.new
+    shared = described_class.new(options, mutex: mutex)
+    allow(MCollective::RPC::Client).to receive(:new).and_return(rpc_client)
+
+    held = shared.with_client('file_transfer', ['node1.example.com'], timeout: 5, publish_timeout: nil) { mutex.owned? }
+
+    expect(held).to be(true)
+    expect(mutex.owned?).to be(false)
+  end
 end
