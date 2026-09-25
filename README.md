@@ -99,8 +99,8 @@ The arguments of `Client.new`:
   and a `stat` with a checksum digest the whole file on the node, so they
   wait the agent's DDL timeout instead when that is longer.
 - `chunk_size`: the most file content one request carries. Without it the
-  measured request and the broker's limit alone decide, so set it when that
-  limit could not be read and is below the assumed 1 MiB.
+  computed request size and the broker's limit alone decide, so set it
+  when that limit could not be read and is below the assumed 1 MiB.
 - `upload_batch_size`: how many nodes one chunk request is published to at
   once. Without it, as many as keep one batch under 256 MiB in memory on
   the client at the broker's limit.
@@ -111,22 +111,23 @@ The arguments of `Client.new`:
 - `cleanup`: whether sessions are removed afterwards, `true`, `false`, or a
   hash from identity to boolean. Default true.
 
-Chunks are sized by measurement, not by a model. For every file the
-library builds the request the connector would publish for its final
-chunk with no content, with the gem's own message and security objects
-and never sent, which gives the signed request and the transport framing
-as they really are. The content is then what the broker's advertised
-payload limit, less a five percent reserve, leaves room for: base64 puts
-four characters in the signed request for every three content bytes, and
-the connector's outer base64 adds a third again plus an escaped newline
-per sixty characters, so the largest content is arithmetic, capped by
-`chunk_size`. A request of that size is built once more to confirm it. A
-download round asks for as much, since a reply carrying the same content
-weighs less than a request: the node signs nothing and sends no
-certificate. A publish guard refuses a request over the limit before it leaves the client
-and fails those nodes with `payload_too_large`, naming a lower chunk size
-as the remedy. A node that does not answer a chunk is reported as
-`no_response`. Nothing is retried.
+Chunks are sized by computing what a request weighs, layer by layer, the
+way the gem builds it: the body, the signed envelope with the identity,
+callerid, collective, ttl, time, signature, and certificate, the base64
+with line breaks the connector applies, and the transport message with
+its headers, including the target list a federation broker is sent for
+the 200 longest identities of the call. The signature and the
+certificate come from asking the security plugin to sign one put with no
+content when the client first sizes a file, which never leaves the
+process, so a remote signer's answer counts too. The content is then
+what the broker's advertised payload limit leaves room for, capped by
+`chunk_size`, with nothing held back. A download round asks for as much,
+since a reply carrying the same content weighs less than a request: the
+node signs nothing and sends no certificate. A publish guard refuses a
+request over the limit before it leaves the client and fails those nodes
+with `payload_too_large`, naming a lower chunk size as the remedy. A node
+that does not answer a chunk is reported as `no_response`. Nothing is
+retried.
 
 A chunk request is published once per node, and the client holds every
 copy in memory until it is written, so a chunk goes to `upload_batch_size`

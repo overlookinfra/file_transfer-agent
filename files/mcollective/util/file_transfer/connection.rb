@@ -16,10 +16,11 @@ module MCollective
       # serializes its other RPC calls with a lock of its own, as OpenBolt
       # does, passes that lock as the mutex and the options its clients use.
       class Connection
-        # The lengths of one direct request: the signed request, which the
-        # connector base64 encodes, and the transport message it publishes
-        # with that encoding inside.
-        Request = Data.define(:signed_bytes, :wire_bytes)
+        # What the security and connector plugins put around every request
+        # of this process. The signature and certificate are the strings the
+        # signer attached to one request, and every later request repeats
+        # their lengths, since the same identity signs them all.
+        Signing = Data.define(:identity, :callerid, :collective, :ttl, :signature, :pubcert, :federated)
 
         # @param options [Hash] The client options, Util.default_options by default
         # @param mutex [Mutex] The lock every call runs under, a caller's own when its process
@@ -76,31 +77,29 @@ module MCollective
           nats_wrapper.instance_variable_get(:@client).server_info[:max_payload]
         end
 
-        # The lengths of one direct request for the action to the identity,
-        # built like the client and the connector build a request, and never
-        # sent. The body, signing, and headers come from the gem's own
-        # calls; the sequence mirrors RPC::Client#call_agent and the
-        # transport hash mirrors Connector::Nats#publish_connected_directed,
-        # so check those two when the gem changes. Used to measure what a
-        # chunk request weighs on the wire, so chunks can be sized to the
-        # broker's limit.
+        # The values the request layers carry, read once. The signature and
+        # the certificate come from asking the security plugin to sign one
+        # request shaped like a put with no content, which never leaves the
+        # process. With a remote signer they come back from that service
+        # and exist nowhere on this host until then, so signing one request
+        # is the one way to have them in every signer mode. The identity,
+        # collective, and ttl are what the client puts in the envelope, and
+        # the federation flag is the connector's own.
         #
-        # @return [Request]
-        def request_bytes(agent, action, args, identity)
-          @mutex.synchronize do
-            client = RPC::Client.new(agent, options: @options.merge(verbose: false))
-            client.progress = false
-            options = client.options
-            framing = { agent: agent, type: :request, collective: options[:collective], filter: options[:filter], options: options }
-            message = Message.new(client.new_request(action, args), nil, framing)
-            message.discovered_hosts = [identity]
-            message.type = :direct_request
-            message.encode!
-            signed_bytes = message.payload.bytesize
-            message.base64_encode!
-            target = PluginManager['connector_plugin'].target_for(message, identity)
-            wire = { 'protocol' => 'choria:transport:1', 'data' => message.payload, 'headers' => target[:headers] }.to_json
-            Request.new(signed_bytes: signed_bytes, wire_bytes: wire.bytesize)
+        # @param agent [String] The agent the signed request names
+        # @return [Signing]
+        def signing(agent)
+          @signing ||= begin
+            security = PluginManager['security_plugin']
+            identity = Config.instance.identity
+            collective = @options[:collective] || Config.instance.main_collective
+            ttl = @options[:ttl] || Config.instance.ttl
+            filter = Util.empty_filter
+            filter['agent'] << agent
+            body = { agent: agent, action: 'put', caller: security.callerid, data: {} }
+            secure = JSON.parse(security.encoderequest(identity, body, SSL.uuid.delete('-'), filter, agent, collective, ttl))
+            Signing.new(identity: identity, callerid: security.callerid, collective: collective, ttl: ttl,
+              signature: secure.fetch('signature'), pubcert: secure.fetch('pubcert'), federated: Util::Choria.new(false).federated?)
           end
         end
       end

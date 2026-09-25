@@ -96,67 +96,56 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
     expect(mutex.owned?).to be(false)
   end
 
-  # The request is built with the gem's own Message and the plugins it
-  # calls, so the sequence and the transport JSON are checked against
-  # them rather than against a model of them.
-  describe '#request_bytes' do
-    let(:args) { { session: 's' * 36, name: 'app.tar', offset: 0, data: ['x' * 300].pack('m0') } }
-    let(:request) { { agent: 'file_transfer', action: 'put', caller: 'choria=controller.mcollective', data: args } }
-    let(:client_options) { { timeout: 5, collective: 'mcollective', filter: MCollective::Util.empty_filter, ttl: 60 } }
-    let(:secure) { { 'protocol' => 'choria:secure:request:1', 'message' => 'x' * 900, 'signature' => 'y' * 344, 'pubcert' => 'z' * 1_200 }.to_json }
-    let(:headers) { { 'mc_sender' => 'controller.example.com', 'reply-to' => 'mcollective.reply.abc.1.2' } }
-    let(:security) { instance_double(MCollective::Security::Choria, encoderequest: secure) }
-    let(:connector) { instance_double(MCollective::Connector::Nats) }
-    let(:signed) { [] }
-    let(:targeted) { [] }
+  # The signature and the certificate are what the signer attaches, which
+  # with a remote signer come back from that service, so the security
+  # plugin signs one request shaped like a put and the answer is kept.
+  describe '#signing' do
+    let(:pubcert) { "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----" }
+    let(:secure) { { 'protocol' => 'choria:secure:request:1', 'message' => 'm', 'signature' => "sig\nnature", 'pubcert' => pubcert }.to_json }
+    let(:security) { instance_double(MCollective::Security::Choria, callerid: 'choria=controller.mcollective', encoderequest: secure) }
+    let(:choria) { instance_double(MCollective::Util::Choria, federated?: true) }
 
     before do
-      allow(MCollective::Config.instance).to receive_messages(direct_addressing: true, identity: 'controller.example.com', ttl: 60)
+      allow(MCollective::Config.instance).to receive_messages(identity: 'controller.example.com', main_collective: 'mcollective', ttl: 60)
       allow(MCollective::PluginManager).to receive(:[]).with('security_plugin').and_return(security)
-      allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(connector)
-      allow(MCollective::RPC::Client).to receive(:new).with('file_transfer', options: hash_including(verbose: false)).and_return(rpc_client)
-      allow(rpc_client).to receive_messages(options: client_options, new_request: request)
-      allow(security).to receive(:encoderequest) do |*call|
-        signed << call
-        secure
+      allow(MCollective::Util::Choria).to receive(:new).with(false).and_return(choria)
+    end
+
+    it 'has the security plugin sign one put with no content and keeps what the signer attached' do
+      signing = connection.signing('file_transfer')
+
+      expect(security).to have_received(:encoderequest) do |sender, body, requestid, filter, agent, collective, ttl|
+        expect(sender).to eq('controller.example.com')
+        expect(body).to eq(agent: 'file_transfer', action: 'put', caller: 'choria=controller.mcollective', data: {})
+        expect(requestid).to match(/\A[0-9a-f]{32}\z/)
+        expect(filter['agent']).to eq(['file_transfer'])
+        expect([agent, collective, ttl]).to eq(['file_transfer', 'mcollective', 60])
       end
-      allow(connector).to receive(:target_for) do |message, identity|
-        targeted << [message, identity]
-        { name: "mcollective.node.#{identity}", headers: headers }
-      end
+      expect(signing).to have_attributes(
+        identity: 'controller.example.com', callerid: 'choria=controller.mcollective', collective: 'mcollective', ttl: 60,
+        signature: "sig\nnature", pubcert: pubcert, federated: true
+      )
     end
 
-    it 'measures the signed request and the transport message the connector would publish for it' do
-      measured = connection.request_bytes('file_transfer', 'put', args, 'node1.example.com')
+    it 'signs once for the life of the connection' do
+      connection.signing('file_transfer')
+      connection.signing('file_transfer')
 
-      expect(measured.signed_bytes).to eq(secure.bytesize)
-      expect(measured.wire_bytes).to eq({ 'protocol' => 'choria:transport:1', 'data' => [secure].pack('m'), 'headers' => headers }.to_json.bytesize)
+      expect(security).to have_received(:encoderequest).once
     end
 
-    it 'builds the request as the client does and signs it as a direct request for the identity' do
-      expect(rpc_client).to receive(:new_request).with('put', args).and_return(request)
+    it 'takes the collective and the ttl from its options over the config' do
+      signing = described_class.new({ timeout: 5, collective: 'production', ttl: 30, filter: {} }).signing('file_transfer')
 
-      connection.request_bytes('file_transfer', 'put', args, 'node1.example.com')
-
-      sender, message, requestid, filter, agent, collective, ttl = signed.first
-      expect(sender).to eq('controller.example.com')
-      expect(message).to eq(request)
-      expect(requestid).to match(/\A[0-9a-f]{32}\z/)
-      expect(filter['agent']).to eq(['file_transfer'])
-      expect([agent, collective, ttl]).to eq(['file_transfer', 'mcollective', 60])
-      message, identity = targeted.first
-      expect(message.type).to eq(:direct_request)
-      expect(message.discovered_hosts).to eq(['node1.example.com'])
-      expect(identity).to eq('node1.example.com')
+      expect(security).to have_received(:encoderequest).with(anything, anything, anything, anything, 'file_transfer', 'production', 30)
+      expect(signing).to have_attributes(collective: 'production', ttl: 30)
     end
 
-    it 'runs under the mutex and sends nothing' do
-      expect(connector).not_to receive(:publish)
-      mutex = Mutex.new
-      shared = described_class.new(options, mutex: mutex)
-      allow(rpc_client).to receive(:new_request) { mutex.owned? ? request : raise('built outside the lock') }
+    it 'builds no client and publishes nothing' do
+      expect(MCollective::RPC::Client).not_to receive(:new)
+      expect(MCollective::PluginManager).not_to receive(:[]).with('connector_plugin')
 
-      expect { shared.request_bytes('file_transfer', 'put', args, 'node1.example.com') }.not_to raise_error
+      connection.signing('file_transfer')
     end
   end
 end

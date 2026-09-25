@@ -42,17 +42,15 @@ module MCollective
           identities = landing.keys & @transfer.active
           return [] if identities.empty?
 
-          # Measured against the longest destination, the largest request
-          # any chunk of the file takes.
-          requested = @sizing.content_bytes(name, landing.values.compact.max_by(&:bytesize) || name, identities.first)
+          stat = File.stat(local_path)
+          size = stat.size
+          mode ||= FileSender.permission_bits(stat)
+          requested = @sizing.content_bytes(name, landing.values, identities, size)
           if requested.zero?
             @transfer.fail(@sizing.too_small_failures(identities, name, :upload))
             return []
           end
           @logger.debug("#{name} goes in chunks of #{requested} bytes")
-          stat = File.stat(local_path)
-          size = stat.size
-          mode ||= FileSender.permission_bits(stat)
           digest = Digest::SHA256.new
           delivered = []
           offset = 0

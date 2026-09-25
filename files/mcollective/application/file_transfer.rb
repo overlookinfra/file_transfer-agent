@@ -23,8 +23,8 @@ module MCollective
       option :chunk_size,
         arguments: ['--chunk-size BYTES'],
         description: 'Upper bound on the bytes of file content per request. Without it, the chunk is the most content ' \
-                     'whose request, measured as it would be sent, fits the broker message size limit minus a five ' \
-                     'percent reserve. Set it lower when that limit could not be read and is below the assumed 1 MiB.',
+                     'whose request, computed as the client builds it, fits the broker message size limit. Set it ' \
+                     'lower when that limit could not be read and is below the assumed 1 MiB.',
         type: Integer
 
       option :upload_batch_size,

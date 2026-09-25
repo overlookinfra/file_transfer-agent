@@ -88,15 +88,15 @@ module MCollective
         def download_files(remote, described, staging, landing)
           identities = landing.keys
           delivered = {}
-          max_bytes = @sizing.content_bytes(remote, remote, identities.first)
+          largest = described.values_at(*identities).map { |data| data[:size] }.max
+          max_bytes = @sizing.content_bytes(remote, [remote], identities, largest)
           if max_bytes.zero?
             @transfer.fail(@sizing.too_small_failures(identities, remote, :download))
             return delivered
           end
           # A reply weighs at most what a request carrying the same content
           # would, for as much of the file as a round asks for.
-          largest = described.values_at(*identities).map { |data| data[:size] }.max
-          reply_wire = @sizing.wire_bytes([max_bytes, largest].min, remote, remote, identities.first)
+          reply_wire = @sizing.wire_bytes([max_bytes, largest].min, remote, remote, identities, largest)
           @logger.debug("#{remote} comes in replies of #{max_bytes} bytes, at most #{reply_wire} on the wire")
           identities.each_slice(@sizing.download_batch_size(reply_wire)) do |group|
             fetch_file(group, remote, staging, described, max_bytes).each do |identity, staged|

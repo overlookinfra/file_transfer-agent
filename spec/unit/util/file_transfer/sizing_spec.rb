@@ -1,39 +1,75 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'json'
 
 RSpec.describe MCollective::Util::FileTransfer::Sizing do
-  let(:connection) { instance_double(MCollective::Util::FileTransfer::Connection, max_payload: 1_000_000) }
-  let(:log) { FakeLogger.new }
-  let(:identity) { 'node1.example.com' }
+  include_context 'with a file transfer client'
+
   let(:settings) { { chunk_size: nil, upload_batch_size: nil, download_batch_size: nil } }
-  # A round limit, so the five percent reserve is 50,000 bytes.
   let(:sizing) { described_class.new(connection, log, **settings) }
-  let(:envelope) { 2_000 }
-  let(:framing) { 300 }
+  let(:name) { 'app.tar' }
+  let(:destination) { '/opt/app/app.tar' }
+  let(:size) { 40_000_000 }
 
-  def content_of(args)
-    args[:data].unpack1('m0').bytesize
+  # The put the content would go out in, as the file sender builds its
+  # final chunk, serialized for the check.
+  def final_put(content, put_name = name, put_destination = destination, put_size = size)
+    { session: 'x' * 36, name: put_name, offset: [put_size - 1, 0].max, data: encoded('x' * content), final: true,
+      sha256: 'x' * 64, mode: '0777', destination: put_destination }.compact
   end
 
-  # A signed request is an envelope plus the base64 data, and the
-  # transport adds framing around its outer encoding.
-  def request_for(args)
-    signed = envelope + args[:data].bytesize
-    MCollective::Util::FileTransfer::Connection::Request.new(signed_bytes: signed, wire_bytes: framing + described_class.encoded_bytes(signed))
+  def content
+    sizing.content_bytes(name, [destination], nodes, size)
   end
 
-  before do
-    allow(connection).to receive(:request_bytes) { |_agent, _action, args, _identity| request_for(args) }
+  it 'answers the most content whose message, serialized as the gem builds it, fits the limit' do
+    expect(serialized_wire(final_put(content))).to be <= max_payload
+    expect(serialized_wire(final_put(content + 3))).to be > max_payload
   end
 
-  it 'keeps five percent of the limit back' do
-    expect(sizing.budget).to eq(950_000)
+  it 'computes the wire size of a request as the serialized message weighs' do
+    [0, 1, 16_384, 300_000, content].each do |bytes|
+      expect(sizing.wire_bytes(bytes, name, destination, nodes, size)).to eq(serialized_wire(final_put(bytes)))
+    end
+  end
+
+  it 'leaves room for the longest destination and the digits of the largest offset' do
+    long = "/opt/#{'d' * 300}"
+    fitted = sizing.content_bytes(name, ['/opt/app', long, nil], nodes, 10**12)
+
+    expect(fitted).to be < content
+    expect(serialized_wire(final_put(fitted, name, long, 10**12))).to be <= max_payload
+    expect(serialized_wire(final_put(fitted + 3, name, long, 10**12))).to be > max_payload
+  end
+
+  it 'leaves out the destination for a file that stays in the session' do
+    fitted = sizing.content_bytes(name, [nil, nil], nodes, size)
+
+    expect(fitted).to be > content
+    expect(serialized_wire(final_put(fitted, name, nil))).to be <= max_payload
+    expect(serialized_wire(final_put(fitted + 3, name, nil))).to be > max_payload
+  end
+
+  context 'when the client is federated' do
+    let(:connection) { FakeConnection.new(wrapper, federated: true) }
+    let(:many) { Array.new(250) { |index| "node#{index}.#{'x' * (index % 7)}.example.com" } }
+
+    it 'leaves room for the federation header carrying the longest identities a message can hold' do
+      fitted = sizing.content_bytes(name, [destination], many, size)
+
+      expect(fitted).to be < content
+      expect(serialized_wire(final_put(fitted), many)).to be <= max_payload
+      expect(serialized_wire(final_put(fitted + 3), many)).to be > max_payload
+      expect(fitted).to eq(sizing.content_bytes(name, [destination], many.max_by(200, &:bytesize), size))
+    end
   end
 
   it 'reads the limit from the connection once' do
-    sizing.max_payload
-    sizing.budget
+    allow(connection).to receive(:max_payload).and_call_original
+
+    sizing.content_bytes(name, [destination], nodes, size)
+    sizing.upload_batch_size
 
     expect(connection).to have_received(:max_payload).once
   end
@@ -42,7 +78,6 @@ RSpec.describe MCollective::Util::FileTransfer::Sizing do
     allow(connection).to receive(:max_payload).and_raise(NoMethodError, 'undefined method server_info for nil')
 
     expect(sizing.max_payload).to eq(1_048_576)
-    expect(sizing.budget).to eq(996_147)
     expect(log.once_ids).to eq(['file_transfer_max_payload_unknown'])
     expect(log.once_messages.first).to include('NoMethodError', 'assumes 1048576 bytes')
   end
@@ -63,93 +98,47 @@ RSpec.describe MCollective::Util::FileTransfer::Sizing do
     end
   end
 
-  it 'fits the most content whose request stays within the budget' do
-    content = sizing.content_bytes('app.tar', '/opt/app/app.tar', identity)
-
-    expect(sizing.wire_bytes(content, 'app.tar', '/opt/app/app.tar', identity)).to be <= 950_000
-    expect(sizing.wire_bytes(content + 3, 'app.tar', '/opt/app/app.tar', identity)).to be > 950_000
-  end
-
   context 'with a chunk size' do
     let(:settings) { { chunk_size: 65_536, upload_batch_size: nil, download_batch_size: nil } }
 
     it 'never exceeds the chunk size it was given' do
-      expect(sizing.content_bytes('app.tar', '/opt/app/app.tar', identity)).to eq(65_536)
+      expect(content).to eq(65_536)
     end
 
-    it 'names the budget, the limit, and the chunk size' do
-      expect(sizing.summary).to eq('950000 usable bytes of the 1000000 byte broker limit (chunk size 65536)')
+    it 'names the limit and the chunk size' do
+      expect(sizing.summary).to eq('a 1048576 byte broker limit (chunk size 65536)')
     end
   end
 
-  it 'measures an empty request and then the sized one, both as a final put of the name to the destination for the identity' do
-    measured = []
-    allow(connection).to receive(:request_bytes) do |agent, action, args, node|
-      measured << [agent, action, args, node]
-      request_for(args)
+  context 'with a limit that leaves less than the minimum chunk' do
+    let(:max_payload) { 30_000 }
+
+    it 'answers zero' do
+      expect(content).to eq(0)
     end
 
-    content = sizing.content_bytes('app.tar', '/opt/app/app.tar', identity)
+    it 'fails the identities with the limit and the direction' do
+      upload = sizing.too_small_failures(['node1', 'node2'], 'app.tar', :upload)
+      download = sizing.too_small_failures(['node1'], '/var/log/app.log', :download)
 
-    expect(measured.map { |_agent, _action, args, _node| content_of(args) }).to eq([0, content])
-    expect(measured.map { |agent, action, _args, node| [agent, action, node] }.uniq).to eq([['file_transfer', 'put', identity]])
-    args = measured.first[2]
-    expect(args).to include(name: 'app.tar', destination: '/opt/app/app.tar', final: true, mode: '0777')
-    expect(args[:session].length).to eq(36)
-    expect(args[:sha256].length).to eq(64)
-    expect(args[:offset]).to be > 2**40
-  end
-
-  it 'answers the minimum chunk, and the two bytes its last base64 group has room for, when the limit just allows it' do
-    # 34,906 less five percent is 33,160 bytes, what a request of 16,384
-    # content bytes weighs in the fake's model.
-    allow(connection).to receive(:max_payload).and_return(34_906)
-
-    expect(sizing.content_bytes('a', 'b', identity)).to eq(16_386)
-  end
-
-  it 'answers zero when the limit leaves less than the minimum chunk' do
-    allow(connection).to receive(:max_payload).and_return(34_905)
-
-    expect(sizing.content_bytes('a', 'b', identity)).to eq(0)
-  end
-
-  it 'fails the identities with the limit and the direction when no chunk fits' do
-    allow(connection).to receive(:max_payload).and_return(34_905)
-
-    upload = sizing.too_small_failures(['node1', 'node2'], 'app.tar', :upload)
-    download = sizing.too_small_failures(['node1'], '/var/log/app.log', :download)
-
-    expect(upload.keys).to eq(['node1', 'node2'])
-    expect(upload.values.map(&:kind).uniq).to eq([:payload_too_large])
-    expect(upload['node2'].message).to eq("The broker's payload limit of 34905 bytes leaves less than 16384 bytes of file content per request, " \
-                                          'so app.tar cannot be sent to node2')
-    expect(download['node1'].message).to include('per reply, so /var/log/app.log cannot be fetched from node1')
-  end
-
-  it 'takes the excess off the content and says so once when the sized request weighs more than computed' do
-    allow(connection).to receive(:request_bytes) do |_agent, _action, args, _identity|
-      request = request_for(args)
-      next request if content_of(args).zero?
-
-      MCollective::Util::FileTransfer::Connection::Request.new(signed_bytes: request.signed_bytes, wire_bytes: request.wire_bytes + 5_000)
+      expect(upload.keys).to eq(['node1', 'node2'])
+      expect(upload.values.map(&:kind).uniq).to eq([:payload_too_large])
+      expect(upload['node2'].message).to eq("The broker's payload limit of 30000 bytes leaves less than 16384 bytes of file content per request, " \
+                                            'so app.tar cannot be sent to node2')
+      expect(download['node1'].message).to include('per reply, so /var/log/app.log cannot be fetched from node1')
     end
-
-    content = sizing.content_bytes('app.tar', '/opt/app/app.tar', identity)
-
-    expect(sizing.wire_bytes(content, 'app.tar', '/opt/app/app.tar', identity)).to be <= 950_000
-    expect(log.once_ids).to eq(['file_transfer_sizing_mismatch'])
-    expect(log.once_messages.first).to include('frames requests differently')
   end
 
   it 'publishes a chunk to as many nodes as keep a batch under the memory bound at the limit' do
-    expect(sizing.upload_batch_size).to eq(268)
+    expect(sizing.upload_batch_size).to eq(256)
   end
 
-  it 'publishes a chunk to one node at a time when the limit is above the memory bound' do
-    allow(connection).to receive(:max_payload).and_return(512 * 1024 * 1024)
+  context 'with a limit above the memory bound' do
+    let(:max_payload) { 512 * 1024 * 1024 }
 
-    expect(sizing.upload_batch_size).to eq(1)
+    it 'publishes a chunk to one node at a time' do
+      expect(sizing.upload_batch_size).to eq(1)
+    end
   end
 
   context 'with an upload batch size' do
@@ -178,7 +167,7 @@ RSpec.describe MCollective::Util::FileTransfer::Sizing do
     end
   end
 
-  it 'names the budget and the limit without a chunk size' do
-    expect(sizing.summary).to eq('950000 usable bytes of the 1000000 byte broker limit (no chunk size)')
+  it 'names the limit without a chunk size' do
+    expect(sizing.summary).to eq('a 1048576 byte broker limit (no chunk size)')
   end
 end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'fileutils'
+require 'json'
 require 'mcollective'
 require 'tmpdir'
 require File.expand_path('../../files/mcollective/util/file_transfer', __dir__)
@@ -64,24 +65,31 @@ class FakeRpcClient
 end
 
 # Stands in for a connection: every call is recorded and yields the one
-# fake RPC client, pointed at the identities of that call. A measurement
-# is recorded among the calls too, under :measure, and answers what the
-# block given at construction makes of the arguments. The broker limit
-# is read the way the real connection reads it.
+# fake RPC client, pointed at the identities of that call. The signing
+# values are fixed strings of the lengths a local signer produces with a
+# 2048 bit key, and the broker limit is read the way the real connection
+# reads it.
 class FakeConnection
+  SIGNING = MCollective::Util::FileTransfer::Connection::Signing.new(
+    identity: 'controller.example.net', callerid: 'choria=controller.example.net', collective: 'mcollective', ttl: 60,
+    signature: ['s' * 256].pack('m').chomp,
+    pubcert: (['-----BEGIN CERTIFICATE-----'] + Array.new(25) { 'c' * 64 } + ['-----END CERTIFICATE-----']).join("\n"),
+    federated: false
+  )
+
   attr_reader :client, :wrapper, :calls
 
-  def initialize(wrapper, &measurer)
+  def initialize(wrapper, federated: false)
     @client = FakeRpcClient.new
     @wrapper = wrapper
-    @measurer = measurer
+    @signing = SIGNING.with(federated: federated)
     @calls = []
   end
 
   def with_client(agent, identities, timeout:, publish_timeout:)
     @calls << { agent: agent, identities: identities.dup, timeout: timeout, publish_timeout: publish_timeout }
     @client.discover(nodes: identities)
-    yield(@client)
+    yield(client)
   end
 
   def nats_wrapper
@@ -92,9 +100,8 @@ class FakeConnection
     @wrapper.instance_variable_get(:@client).server_info[:max_payload]
   end
 
-  def request_bytes(agent, action, args, identity)
-    @calls << { measure: action, agent: agent, identities: [identity] }
-    @measurer.call(args)
+  def signing(_agent)
+    @signing
   end
 end
 
@@ -147,22 +154,40 @@ module FileTransferClientHelpers
     args[:data].unpack1('m0')
   end
 
-  # The wire model of the fake: a signed request is an envelope plus the
-  # base64 data, and the transport adds framing around its outer encoding.
-  # The connection's measurement and the fake wrapper's publishing share
-  # it, as a measured and a sent request agree, and a context that
-  # overrides wire_size gives the sent request weight the measurement did
-  # not show.
-  def measured_size(args)
-    framing + MCollective::Util::FileTransfer::Sizing.encoded_bytes(envelope + args[:data].bytesize)
+  # The message the connector would publish for a put with these
+  # arguments to these identities, serialized layer by layer with the
+  # same calls the gem makes, the body of RPC::Client#new_request, the
+  # envelope and secure request of Security::Choria#encoderequest, the
+  # base64 with line breaks of SSL.base64_encode, and the transport JSON
+  # of the NATS connector, with the reply subject at its largest counter.
+  # The library computes the same size by arithmetic, so this is the check
+  # on that arithmetic, and the size a sent request weighs in the fake.
+  def serialized_wire(args, identities = nodes, signing: connection.signing('file_transfer'))
+    data = args.slice(:session, :name, :offset, :data, :final, :sha256, :mode, :destination)
+    body = JSON.dump(agent: 'file_transfer', action: 'put', caller: signing.callerid, data: data)
+    filter = MCollective::Util.empty_filter
+    filter['agent'] << 'file_transfer'
+    envelope = JSON.dump(protocol: 'choria:request:1', message: body,
+      envelope: { requestid: 'x' * 32, senderid: signing.identity, callerid: signing.callerid, filter: filter,
+                  collective: signing.collective, agent: 'file_transfer', ttl: signing.ttl, time: Time.now.to_i })
+    secure = JSON.dump(protocol: 'choria:secure:request:1', message: envelope, signature: signing.signature, pubcert: signing.pubcert)
+    headers = { 'mc_sender' => signing.identity, 'reply-to' => "#{signing.collective}.reply.#{'x' * 32}.#{Process.pid}.#{'9' * 20}" }
+    if signing.federated
+      targets = identities.max_by(200, &:bytesize).map { |identity| "#{signing.collective}.node.#{identity}" }
+      headers = { 'federation' => { 'target' => targets, 'req' => 'x' * 32 } }.merge(headers)
+    end
+    JSON.dump('protocol' => 'choria:transport:1', 'data' => [secure].pack('m'), 'headers' => headers).bytesize
   end
 
+  # What a sent request weighs in the fake, the serialized message by
+  # default, and more in a context that says the connector sends more
+  # than the sizing computed.
   def wire_size(args)
-    measured_size(args)
+    serialized_wire(args)
   end
 
-  # put publishes through the fake wrapper, so the guard sees the modeled
-  # wire size, then answers for every addressed identity.
+  # put publishes through the fake wrapper, so the guard sees what the
+  # request weighs, then answers for every addressed identity.
   def stub_put
     rpc.on(:put) do |args, names|
       put_calls << args.merge(identities: names, batch_size: rpc.batch_size)
@@ -201,7 +226,7 @@ RSpec.shared_context 'with a file transfer client' do
 
   let(:max_payload) { 1_048_576 }
   let(:wrapper) { FakeNatsWrapper.new(max_payload) }
-  let(:connection) { fake_connection(wrapper) }
+  let(:connection) { FakeConnection.new(wrapper) }
   let(:rpc) { connection.client }
   let(:log) { FakeLogger.new }
   let(:chunk_size) { 16_384 }
@@ -212,8 +237,6 @@ RSpec.shared_context 'with a file transfer client' do
   let(:node1) { 'node1.example.com' }
   let(:node2) { 'node2.example.com' }
   let(:nodes) { [node1, node2] }
-  let(:envelope) { 2_000 }
-  let(:framing) { 300 }
   let(:put_calls) { [] }
   let(:workdir) { Dir.mktmpdir('file_transfer-client') }
 
@@ -226,16 +249,8 @@ RSpec.shared_context 'with a file transfer client' do
 
   after { FileUtils.remove_entry_secure(workdir) }
 
-  # A connection over the wrapper whose measurements follow the wire
-  # model, for the shared context and for a context that swaps the wrapper.
-  def fake_connection(wrapper)
-    FakeConnection.new(wrapper) do |args|
-      MCollective::Util::FileTransfer::Connection::Request.new(signed_bytes: envelope + args[:data].bytesize, wire_bytes: measured_size(args))
-    end
-  end
-
-  # The calls that invoke an action, leaving out the measurements.
+  # The calls that invoked an action, in order.
   def action_calls
-    connection.calls.reject { |call| call[:measure] }
+    connection.calls
   end
 end

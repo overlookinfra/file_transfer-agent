@@ -124,11 +124,15 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
   end
 
-  # A reply of a 100 byte file weighs 3244 bytes in the fake's wire model,
-  # so two fit under three quarters of a 10000 byte backlog and a third
-  # does not.
+  # The backlog is set so that two replies of a 100 byte file, at the
+  # size the serialized message gives them, fit under three quarters of
+  # it and a third does not.
   context 'with replies large enough that three nodes overrun the broker backlog' do
-    before { stub_const('MCollective::Util::FileTransfer::Sizing::BROKER_PENDING_LIMIT', 10_000) }
+    before do
+      reply = serialized_wire({ session: 'x' * 36, name: '/var/log/app.log', offset: 99, data: encoded('a' * 100), final: true,
+                                sha256: 'x' * 64, mode: '0777', destination: '/var/log/app.log' })
+      stub_const('MCollective::Util::FileTransfer::Sizing::BROKER_PENDING_LIMIT', (reply * 2.5 / 0.75).round)
+    end
 
     let(:node3) { 'node3.example.com' }
     let(:nodes) { [node1, node2, node3] }

@@ -58,14 +58,6 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(action_calls.map { |call| call[:timeout] }).to eq([30, 30, 30, 30, 120, 30])
   end
 
-  it 'measures an empty chunk request and the sized one, with a client for one node, after the session and before the chunks' do
-    client.upload(source, destination, nodes)
-
-    measurement = { measure: 'put', agent: 'file_transfer', identities: [node1] }
-    expect(connection.calls[2..3]).to eq([measurement, measurement])
-    expect(connection.calls.map { |call| call[:measure] }).to eq([nil, nil, 'put', 'put', nil, nil, nil, nil])
-  end
-
   it 'publishes each chunk to as many nodes at once as keep a batch under the memory bound at the broker limit' do
     client.upload(source, destination, nodes)
 
@@ -254,12 +246,12 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     end
   end
 
-  context 'when a chunk weighs more when sent than when measured' do
+  context 'when the connector sends more than the sizing computed' do
     let(:max_payload) { 200_000 }
     let(:chunk_size) { 100_000 }
 
-    # Above 60 KB of content the sent request grows by 150 KB the measured
-    # one did not show, overhead the sizing could not see.
+    # Above 60 KB of content the sent request grows by 150 KB the sizing
+    # did not account for, framing it does not know about.
     def wire_size(args)
       super + (decoded(args).bytesize > 60_000 ? 150_000 : 0)
     end
@@ -288,7 +280,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
   end
 
   context 'when the NATS wrapper is not reachable' do
-    let(:connection) { fake_connection(nil) }
+    let(:connection) { FakeConnection.new(nil) }
 
     # Nothing passes through the guard, as nothing would without a wrapper,
     # whatever an earlier example prepended onto the fake wrapper's class.
@@ -330,7 +322,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       let(:max_payload) { 200_000 }
 
       # Only the longer destination trips the guard, with weight the
-      # measurement did not show.
+      # sizing did not account for.
       def wire_size(args)
         super + (args[:destination] == '/opt/app/source.bin' ? 1_000_000 : 0)
       end
