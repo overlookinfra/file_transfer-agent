@@ -157,14 +157,33 @@ when no node responded, and 1 when no node matched.
 
 ## Installation
 
+The module is a Puppet module that depends on `choria/mcollective`. Put it
+in the Puppet environment under the directory name
+`mcollective_agent_file_transfer`, either with a Puppetfile entry from its
+Git repository:
+
+```
+mod 'mcollective_agent_file_transfer',
+  git: 'https://github.com/overlookinfra/file_transfer-agent',
+  ref: 'main'
+```
+
+or with a clone of the repository into the environment's modules directory
+under that name. Then add the class to the plugins the Choria module
+installs:
+
 ```yaml
 mcollective::plugin_classes:
   - mcollective_agent_file_transfer
 ```
 
-The module installs the agent, its DDL files, and its policy file through
-`mcollective::module_plugin`. The Choria server picks up the agent without a
-restart.
+The Choria module contains every class in that list, and this one installs
+the agent, its DDL files, and its policy file where `mcollective::server`
+is true, and the client library and `mco file_transfer` where
+`mcollective::client` is true, through `mcollective::module_plugin`. The
+Choria server picks up the agent without a restart. Without Puppet, the
+files listed in `data/plugin.yaml` go under `mcollective/` in the Choria
+libdir of a server or a client.
 
 The agent runs on Linux, macOS, and Windows nodes under the Puppet agent's
 Ruby. The agent, the client library, and the command need Ruby 3.2 or
