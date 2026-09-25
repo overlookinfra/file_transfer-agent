@@ -68,7 +68,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
   end
 
-  it 'asks for as much of a file per reply as a request could carry' do
+  it 'asks for a chunk of the file per reply' do
     stub_file_stats
     stub_get
 
@@ -124,15 +124,15 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
   end
 
-  # A reply of a 100 byte file weighs 3244 bytes in the fake's wire model,
-  # so two fit under three quarters of a 10000 byte backlog and a third
-  # does not.
+  # Two replies at the broker limit fit under three quarters of the
+  # backlog and a third does not.
   context 'with replies large enough that three nodes overrun the broker backlog' do
-    before { stub_const('MCollective::Util::FileTransfer::Sizing::BROKER_PENDING_LIMIT', 10_000) }
-
+    let(:max_payload) { 4_000 }
     let(:node3) { 'node3.example.com' }
     let(:nodes) { [node1, node2, node3] }
     let(:contents) { { node1 => 'a' * 100, node2 => 'b' * 100, node3 => 'c' * 100 } }
+
+    before { stub_const('MCollective::Util::FileTransfer::Rpc::BROKER_PENDING_LIMIT', 12_000) }
 
     it 'asks two nodes at a time without being told a batch size' do
       stub_file_stats

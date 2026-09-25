@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'json'
 require 'mcollective/connector/nats'
-require 'mcollective/security/choria'
 
 RSpec.describe MCollective::Util::FileTransfer::Connection do
   let(:rpc_client) { instance_double(MCollective::RPC::Client, 'progress=': nil, 'timeout=': nil, discover: nil) }
@@ -94,69 +92,5 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
 
     expect(held).to be(true)
     expect(mutex.owned?).to be(false)
-  end
-
-  # The request is built with the gem's own Message and the plugins it
-  # calls, so the sequence and the transport JSON are checked against
-  # them rather than against a model of them.
-  describe '#request_bytes' do
-    let(:args) { { session: 's' * 36, name: 'app.tar', offset: 0, data: ['x' * 300].pack('m0') } }
-    let(:request) { { agent: 'file_transfer', action: 'put', caller: 'choria=controller.mcollective', data: args } }
-    let(:client_options) { { timeout: 5, collective: 'mcollective', filter: MCollective::Util.empty_filter, ttl: 60 } }
-    let(:secure) { { 'protocol' => 'choria:secure:request:1', 'message' => 'x' * 900, 'signature' => 'y' * 344, 'pubcert' => 'z' * 1_200 }.to_json }
-    let(:headers) { { 'mc_sender' => 'controller.example.com', 'reply-to' => 'mcollective.reply.abc.1.2' } }
-    let(:security) { instance_double(MCollective::Security::Choria, encoderequest: secure) }
-    let(:connector) { instance_double(MCollective::Connector::Nats) }
-    let(:signed) { [] }
-    let(:targeted) { [] }
-
-    before do
-      allow(MCollective::Config.instance).to receive_messages(direct_addressing: true, identity: 'controller.example.com', ttl: 60)
-      allow(MCollective::PluginManager).to receive(:[]).with('security_plugin').and_return(security)
-      allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(connector)
-      allow(MCollective::RPC::Client).to receive(:new).with('file_transfer', options: hash_including(verbose: false)).and_return(rpc_client)
-      allow(rpc_client).to receive_messages(options: client_options, new_request: request)
-      allow(security).to receive(:encoderequest) do |*call|
-        signed << call
-        secure
-      end
-      allow(connector).to receive(:target_for) do |message, identity|
-        targeted << [message, identity]
-        { name: "mcollective.node.#{identity}", headers: headers }
-      end
-    end
-
-    it 'measures the signed request and the transport message the connector would publish for it' do
-      measured = connection.request_bytes('file_transfer', 'put', args, 'node1.example.com')
-
-      expect(measured.signed_bytes).to eq(secure.bytesize)
-      expect(measured.wire_bytes).to eq({ 'protocol' => 'choria:transport:1', 'data' => [secure].pack('m'), 'headers' => headers }.to_json.bytesize)
-    end
-
-    it 'builds the request as the client does and signs it as a direct request for the identity' do
-      expect(rpc_client).to receive(:new_request).with('put', args).and_return(request)
-
-      connection.request_bytes('file_transfer', 'put', args, 'node1.example.com')
-
-      sender, message, requestid, filter, agent, collective, ttl = signed.first
-      expect(sender).to eq('controller.example.com')
-      expect(message).to eq(request)
-      expect(requestid).to match(/\A[0-9a-f]{32}\z/)
-      expect(filter['agent']).to eq(['file_transfer'])
-      expect([agent, collective, ttl]).to eq(['file_transfer', 'mcollective', 60])
-      message, identity = targeted.first
-      expect(message.type).to eq(:direct_request)
-      expect(message.discovered_hosts).to eq(['node1.example.com'])
-      expect(identity).to eq('node1.example.com')
-    end
-
-    it 'runs under the mutex and sends nothing' do
-      expect(connector).not_to receive(:publish)
-      mutex = Mutex.new
-      shared = described_class.new(options, mutex: mutex)
-      allow(rpc_client).to receive(:new_request) { mutex.owned? ? request : raise('built outside the lock') }
-
-      expect { shared.request_bytes('file_transfer', 'put', args, 'node1.example.com') }.not_to raise_error
-    end
   end
 end

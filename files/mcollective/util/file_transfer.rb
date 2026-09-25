@@ -6,31 +6,39 @@ require_relative 'file_transfer/download'
 require_relative 'file_transfer/file_sender'
 require_relative 'file_transfer/rpc'
 require_relative 'file_transfer/session'
-require_relative 'file_transfer/sizing'
 require_relative 'file_transfer/transfer'
 require_relative 'file_transfer/upload'
 
 module MCollective
   module Util
     # The client side of the file_transfer agent. A Client moves files to
-    # and from nodes in chunks sized to the broker's payload limit, verifies
-    # every file with SHA-256, and keeps temporary files in sessions the
-    # agent owns. Nodes are addressed by Choria identity, and every call
-    # answers an Outcome per identity rather than raising for one node's
-    # failure. The README describes the connection and logger contracts.
+    # and from nodes in chunks that fit the broker's payload limit,
+    # verifies every file with SHA-256, and keeps temporary files in
+    # sessions the agent owns. Nodes are addressed by Choria identity, and
+    # every call answers an Outcome per identity rather than raising for
+    # one node's failure. The README describes the connection and logger
+    # contracts.
     module FileTransfer
       VERSION = '1.0.0'
 
       class Client
+        # The file content one request carries, in kibibytes. It fits the
+        # broker's default 1 MiB payload limit with the signed envelope,
+        # the two base64 passes, and the transport headers around it, as
+        # the design document accounts for. A publish guard refuses a
+        # request over the limit, and a caller lowers the chunk where a
+        # broker allows less.
+        DEFAULT_CHUNK_KIB = 512
+
         # @param connection [Connection] Builds the RPC clients from a caller's options and lock
         # @param logger [#debug, #warn, #warn_once] Receives the log lines, see DefaultLogger
         # @param rpc_timeout [Numeric] Seconds to wait for every node's reply to one call, and to
         #   publish one call to every node. A call that digests a whole file on the node waits
         #   the agent's DDL timeout instead when that is longer.
-        # @param chunk_size [Integer, nil] The most file content one request carries, or nil to let
-        #   the sizing calculation decide
+        # @param chunk_size [Integer, nil] The file content one request carries, in kibibytes,
+        #   or nil for DEFAULT_CHUNK_KIB
         # @param upload_batch_size [Integer, nil] How many nodes one chunk request is published to
-        #   at once, or nil for as many as we can to keep a batch under Sizing::UPLOAD_BATCH_BYTES
+        #   at once, or nil for as many as we can to keep a batch under Rpc::UPLOAD_BATCH_BYTES
         # @param download_batch_size [Integer, nil] How many nodes one download round asks at once,
         #   or nil for as many as we can to keep one round of replies under the broker's connection backlog
         # @param cleanup [Boolean, Hash{String => Boolean}] Whether sessions are removed
@@ -38,9 +46,8 @@ module MCollective
         def initialize(connection:, logger: DefaultLogger.new, rpc_timeout: 30, chunk_size: nil,
                        upload_batch_size: nil, download_batch_size: nil, cleanup: true)
           @logger = logger
-          @rpc = Rpc.new(connection, logger, rpc_timeout)
-          @sizing = Sizing.new(connection, logger, chunk_size: chunk_size, upload_batch_size: upload_batch_size,
-            download_batch_size: download_batch_size)
+          @rpc = Rpc.new(connection, logger, rpc_timeout, upload_batch_size: upload_batch_size, download_batch_size: download_batch_size)
+          @chunk = (chunk_size || DEFAULT_CHUNK_KIB) * 1024
           @cleanup = cleanup
         end
 
@@ -53,7 +60,7 @@ module MCollective
         # @return [Hash{String => Outcome}] By identity, with success being the path the file landed at
         def upload(source, destination, identities)
           transfer = start_transfer(identities)
-          Upload.new(transfer: transfer, rpc: @rpc, sizing: @sizing, logger: @logger, cleanup: @cleanup).run(source, destination)
+          Upload.new(transfer: transfer, rpc: @rpc, chunk: @chunk, logger: @logger, cleanup: @cleanup).run(source, destination)
         end
 
         # Fetches a file or directory tree from every node into a local
@@ -65,7 +72,7 @@ module MCollective
         # @return [Hash{String => Outcome}] By identity, with success being the local path
         def download(source, destinations)
           transfer = start_transfer(destinations.keys)
-          Download.new(transfer: transfer, rpc: @rpc, sizing: @sizing, logger: @logger).run(source, destinations)
+          Download.new(transfer: transfer, rpc: @rpc, chunk: @chunk, logger: @logger).run(source, destinations)
         end
 
         # A session on every identity, for files a caller delivers and
@@ -73,16 +80,17 @@ module MCollective
         # session's failures.
         def open_session(identities)
           transfer = start_transfer(identities)
-          sender = FileSender.new(transfer: transfer, rpc: @rpc, sizing: @sizing, logger: @logger)
+          sender = FileSender.new(transfer: transfer, rpc: @rpc, chunk: @chunk, logger: @logger)
           Session.create(transfer: transfer, rpc: @rpc, logger: @logger, cleanup: @cleanup, sender: sender)
         end
 
         private
 
-        # A transfer to the identities, logged with the sizing it runs under.
+        # A transfer to the identities, logged with the limit and the chunk
+        # it runs under.
         def start_transfer(identities)
           transfer = Transfer.new(identities)
-          @logger.debug("File transfer with #{transfer.count} has #{@sizing.summary}")
+          @logger.debug("File transfer with #{transfer.count} has a #{@rpc.max_payload} byte broker limit and chunks of #{@chunk} bytes")
           transfer
         end
       end

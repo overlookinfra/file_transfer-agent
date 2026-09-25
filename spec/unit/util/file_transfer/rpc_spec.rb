@@ -135,26 +135,102 @@ RSpec.describe MCollective::Util::FileTransfer::Rpc do
     expect(rpc.batch_size).to be_nil
   end
 
-  it 'answers the largest message a guarded call published and 0 for an unguarded one' do
+  it 'holds every message of a call under the broker limit and lifts the limit after' do
+    seen = nil
     stub_stat do |_args, names|
+      seen = MCollective::Util::FileTransfer::PublishGuard.limit
       wrapper.publish('subject', 'x' * 500)
       results_for(names, { exists: true })
     end
 
-    expect(stat_call(guard: 1_000).wire_bytes).to eq(500)
-    expect(stat_call.wire_bytes).to eq(0)
+    stat_call
+
+    expect(seen).to eq(max_payload)
+    expect(MCollective::Util::FileTransfer::PublishGuard.limit).to be_nil
+    expect(wrapper.published).to eq([500])
   end
 
-  it 'fails every node with payload_too_large when the guard refuses the message, naming the chunk size as the remedy' do
-    stub_stat do |_args, names|
-      wrapper.publish('subject', 'x' * 1_500)
-      results_for(names, { exists: true })
+  context 'with a message over the broker limit' do
+    let(:max_payload) { 1_000 }
+
+    it 'fails every node with payload_too_large when the guard refuses the message, naming the chunk size as the remedy' do
+      stub_stat do |_args, names|
+        wrapper.publish('subject', 'x' * 1_500)
+        results_for(names, { exists: true })
+      end
+
+      response = stat_call
+
+      expect(wrapper.published).to be_empty
+      expect(MCollective::Util::FileTransfer::PublishGuard.limit).to be_nil
+      expect(response.errors.values.map(&:kind).uniq).to eq([:payload_too_large])
+      expect(response.errors[node1].message).to include("file_transfer.stat /x on #{node1} was not sent", '1500 byte message', 'Lower the chunk size')
+    end
+  end
+
+  describe 'the broker limit' do
+    it 'is read from the connection once' do
+      allow(connection).to receive(:max_payload).and_call_original
+
+      agent_rpc.max_payload
+      agent_rpc.upload_batch_size
+
+      expect(connection).to have_received(:max_payload).once
     end
 
-    response = stat_call(guard: 1_000)
+    it 'is assumed to be 1 MiB, with one warning, when the connection cannot read it' do
+      allow(connection).to receive(:max_payload).and_raise(NoMethodError, 'undefined method server_info for nil')
 
-    expect(wrapper.published).to be_empty
-    expect(response.errors.values.map(&:kind).uniq).to eq([:payload_too_large])
-    expect(response.errors[node1].message).to include("file_transfer.stat /x on #{node1} was not sent", '1500 byte message', 'Lower the chunk size')
+      expect(agent_rpc.max_payload).to eq(1_048_576)
+      expect(log.once_ids).to eq(['file_transfer_max_payload_unknown'])
+      expect(log.once_messages.first).to include('NoMethodError', 'assumes 1048576 bytes')
+    end
+
+    it 'is assumed to be 1 MiB when the server info gives no positive integer' do
+      allow(connection).to receive(:max_payload).and_return(nil)
+
+      expect(agent_rpc.max_payload).to eq(1_048_576)
+      expect(log.once_messages.first).to include('the server info says nil')
+    end
+  end
+
+  describe 'the batch sizes' do
+    it 'publishes a chunk to as many nodes as keep a batch under the memory bound at the limit' do
+      expect(agent_rpc.upload_batch_size).to eq(256)
+    end
+
+    it 'asks as many nodes per download round as keep the replies, each at most the limit, under three quarters of the broker backlog' do
+      expect(agent_rpc.download_batch_size).to eq(48)
+    end
+
+    context 'with a limit above the memory bound' do
+      let(:max_payload) { 512 * 1024 * 1024 }
+
+      it 'publishes a chunk to one node at a time and asks one node per download round' do
+        expect(agent_rpc.upload_batch_size).to eq(1)
+        expect(agent_rpc.download_batch_size).to eq(1)
+      end
+    end
+
+    context 'with batch sizes of its own' do
+      let(:agent_rpc) { described_class.new(connection, log, 30, upload_batch_size: 3, download_batch_size: 3) }
+
+      it 'uses them when they fit' do
+        expect(agent_rpc.upload_batch_size).to eq(3)
+        expect(agent_rpc.download_batch_size).to eq(3)
+        expect(log.once_ids).to be_empty
+      end
+    end
+
+    context 'with a download batch size the limit leaves no room for' do
+      let(:agent_rpc) { described_class.new(connection, log, 30, download_batch_size: 3) }
+      let(:max_payload) { 32 * 1024 * 1024 }
+
+      it 'reduces the batch to the bound with a warning naming the broker' do
+        expect(agent_rpc.download_batch_size).to eq(1)
+        expect(log.once_ids).to eq(['file_transfer_download_batch_bounded'])
+        expect(log.once_messages.first).to include('batch size of 3 is reduced to 1', 'the broker holds for a connection')
+      end
+    end
   end
 end

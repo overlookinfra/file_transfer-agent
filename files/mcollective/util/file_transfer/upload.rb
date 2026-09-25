@@ -14,21 +14,20 @@ module MCollective
       class Upload
         # @param transfer [Transfer] The nodes to send to, which drop out as steps fail
         # @param rpc [Rpc]
-        # @param sizing [Sizing]
+        # @param chunk [Integer] The bytes of file content one put carries
         # @param logger [#debug, #warn]
         # @param cleanup [Boolean, Hash{String => Boolean}] Whether the session is removed afterwards
-        def initialize(transfer:, rpc:, sizing:, logger:, cleanup:)
+        def initialize(transfer:, rpc:, chunk:, logger:, cleanup:)
           @transfer = transfer
           @rpc = rpc
-          @sizing = sizing
           @logger = logger
           @cleanup = cleanup
-          @sender = FileSender.new(transfer: transfer, rpc: rpc, sizing: sizing, logger: logger)
+          @sender = FileSender.new(transfer: transfer, rpc: rpc, chunk: chunk, logger: logger)
         end
 
         # See Client#upload.
         def run(source, destination)
-          @logger.debug("Upload chunks go to #{@sizing.upload_batch_size} nodes per request")
+          @logger.debug("Upload chunks go to #{@rpc.upload_batch_size} nodes per request")
           landing = landing_paths(source, destination)
           Session.with(transfer: @transfer, rpc: @rpc, logger: @logger, cleanup: @cleanup, sender: @sender) do |session|
             if File.directory?(source)

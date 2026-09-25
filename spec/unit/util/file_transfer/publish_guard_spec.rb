@@ -3,45 +3,51 @@
 require 'spec_helper'
 
 RSpec.describe MCollective::Util::FileTransfer::PublishGuard do
-  let(:wrapper) { FakeNatsWrapper.new(1_000) }
-  let(:connection) { FakeConnection.new(wrapper) }
-  let(:log) { FakeLogger.new }
-  let(:guard) { described_class.new(connection, log) }
+  # A wrapper the guard is prepended onto, standing in for the NATS wrapper.
+  let(:wrapper_class) do
+    Class.new do
+      attr_reader :sent
 
-  it 'sets the limit for the block only and remembers the largest message published under it' do
-    limit_inside = nil
+      def initialize
+        @sent = []
+      end
 
-    guard.guarding(1_000) do
-      limit_inside = MCollective::Util::FileTransfer::PublishHook.limit
-      wrapper.publish('subject', 'x' * 200)
-      wrapper.publish('subject', 'x' * 700)
+      def publish(_destination, payload, _reply = nil)
+        @sent << payload
+      end
     end
+  end
+  let(:wrapper) { wrapper_class.new }
 
-    expect(limit_inside).to eq(1_000)
-    expect(MCollective::Util::FileTransfer::PublishHook.limit).to be_nil
-    expect(guard.largest_published).to eq(700)
-    expect(wrapper.published).to eq([200, 700])
+  before { described_class.install(wrapper_class) }
+
+  after { described_class.limit = nil }
+
+  it 'installs once' do
+    described_class.install(wrapper_class)
+
+    expect(wrapper_class.ancestors.count(described_class)).to eq(1)
   end
 
-  it 'clears the limit when the block raises' do
-    expect { guard.guarding(1_000) { wrapper.publish('subject', 'x' * 1_001) } }
-      .to raise_error(MCollective::Util::FileTransfer::PayloadTooLarge)
+  it 'passes a message through when no limit is set' do
+    wrapper.publish('subject', 'payload')
 
-    expect(MCollective::Util::FileTransfer::PublishHook.limit).to be_nil
-    expect(wrapper.published).to be_empty
+    expect(wrapper.sent).to eq(['payload'])
   end
 
-  context 'without a wrapper to hook' do
-    let(:connection) { FakeConnection.new(nil) }
+  it 'refuses a message over the limit before it is sent, naming both sizes' do
+    described_class.limit = 100
 
-    it 'runs the block unguarded and warns once naming the reason' do
-      ran = 0
+    expect { wrapper.publish('subject', 'x' * 130) }
+      .to raise_error(MCollective::Util::FileTransfer::PayloadTooLarge, "A 130 byte message exceeds the broker's 100 byte payload limit")
+    expect(wrapper.sent).to be_empty
+  end
 
-      2.times { guard.guarding(1_000) { ran += 1 } }
+  it 'sends a message at the limit' do
+    described_class.limit = 100
 
-      expect(ran).to eq(2)
-      expect(log.once_ids).to eq(['file_transfer_guard_unavailable', 'file_transfer_guard_unavailable'])
-      expect(log.once_messages.first).to include('has no publish method', 'would drop the connection')
-    end
+    wrapper.publish('subject', 'x' * 100)
+
+    expect(wrapper.sent.length).to eq(1)
   end
 end

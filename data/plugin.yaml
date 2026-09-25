@@ -20,7 +20,6 @@ mcollective_agent_file_transfer::client_files:
 - util/file_transfer/publish_guard.rb
 - util/file_transfer/rpc.rb
 - util/file_transfer/session.rb
-- util/file_transfer/sizing.rb
 - util/file_transfer/transfer.rb
 - util/file_transfer/upload.rb
 mcollective_agent_file_transfer::client_directories:

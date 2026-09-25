@@ -58,14 +58,6 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(action_calls.map { |call| call[:timeout] }).to eq([30, 30, 30, 30, 120, 30])
   end
 
-  it 'measures an empty chunk request and the sized one, with a client for one node, after the session and before the chunks' do
-    client.upload(source, destination, nodes)
-
-    measurement = { measure: 'put', agent: 'file_transfer', identities: [node1] }
-    expect(connection.calls[2..3]).to eq([measurement, measurement])
-    expect(connection.calls.map { |call| call[:measure] }).to eq([nil, nil, 'put', 'put', nil, nil, nil, nil])
-  end
-
   it 'publishes each chunk to as many nodes at once as keep a batch under the memory bound at the broker limit' do
     client.upload(source, destination, nodes)
 
@@ -242,37 +234,16 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(log.warnings).not_to include(a_string_including('stale_after'))
   end
 
-  context 'when the broker limit leaves no room for a chunk' do
+  context 'when a chunk weighs more than the broker limit' do
     let(:max_payload) { 30_000 }
 
-    it 'fails every node before a chunk is sent' do
+    it 'fails every node before the chunk leaves the client and names the chunk size as the remedy' do
       outcomes = client.upload(source, destination, nodes)
 
-      expect(outcomes.values.map(&:kind).uniq).to eq([:payload_too_large])
-      expect(outcomes[node1].message).to include('payload limit of 30000 bytes leaves less than 16384 bytes', 'source.bin cannot be sent')
-      expect(chunks).to be_empty
-    end
-  end
-
-  context 'when a chunk weighs more when sent than when measured' do
-    let(:max_payload) { 200_000 }
-    let(:chunk_size) { 100_000 }
-
-    # Above 60 KB of content the sent request grows by 150 KB the measured
-    # one did not show, overhead the sizing could not see.
-    def wire_size(args)
-      super + (decoded(args).bytesize > 60_000 ? 150_000 : 0)
-    end
-
-    it 'fails the node before the chunk leaves the client and names the chunk size as the remedy' do
-      big = local_file('big.bin', SecureRandom.random_bytes(70_000))
-
-      outcomes = client.upload(big, destination, [node1])
-
-      expect(chunks.map { |call| decoded(call).bytesize }).to eq([70_000])
+      expect(chunks.map { |call| decoded(call).bytesize }).to eq([16_384])
       expect(wrapper.published).to be_empty
-      expect(outcomes[node1].kind).to eq(:payload_too_large)
-      expect(outcomes[node1].message).to include("exceeds the broker's 200000 byte payload limit", 'Lower the chunk size')
+      expect(outcomes.values.map(&:kind).uniq).to eq([:payload_too_large])
+      expect(outcomes[node1].message).to include("exceeds the broker's 30000 byte payload limit", 'Lower the chunk size')
     end
   end
 
@@ -287,36 +258,17 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     end
   end
 
-  context 'when the NATS wrapper is not reachable' do
-    let(:connection) { fake_connection(nil) }
+  context 'when the broker limit cannot be read' do
+    let(:wrapper) { FakeNatsWrapper.new(nil) }
 
-    # Nothing passes through the guard, as nothing would without a wrapper,
-    # whatever an earlier example prepended onto the fake wrapper's class.
-    before do
-      rpc.on(:put) do |args, names|
-        put_calls << args.merge(identities: names, batch_size: rpc.batch_size)
-        results_for(names)
-      end
-    end
-
-    it 'sizes chunks from the default limit and warns that the limit and the guard are missing' do
+    it 'sends the chunks under the assumed limit and warns once' do
       outcomes = client.upload(source, destination, [node1])
 
-      expect(log.once_ids.uniq).to contain_exactly('file_transfer_max_payload_unknown', 'file_transfer_guard_unavailable')
-      expect(log.once_messages.first).to include('NoMethodError')
+      expect(log.once_ids).to eq(['file_transfer_max_payload_unknown'])
+      expect(log.once_messages.first).to include('the server info says nil')
       expect(outcomes[node1]).to be_success
       expect(chunks.map { |call| decoded(call).bytesize }).to eq([16_384, 16_384, 7_232])
-      expect(log.debugs.grep(/on the wire/)).to be_empty
     end
-  end
-
-  it 'logs the wire size of each chunk request against its content at debug' do
-    client.upload(source, destination, nodes)
-
-    lines = log.debugs.grep(/on the wire/)
-    expect(lines.length).to eq(3)
-    expect(lines.first).to eq("file_transfer.put source.bin weighed #{wire_size(chunks.first)} bytes on the wire for 16384 bytes of content")
-    expect(lines.last).to include('(final) weighed', 'for 7232 bytes of content')
   end
 
   context 'when the destination is a directory on some nodes only' do
@@ -329,8 +281,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     context 'when the broker refuses the second landing group' do
       let(:max_payload) { 200_000 }
 
-      # Only the longer destination trips the guard, with weight the
-      # measurement did not show.
+      # Only the longer destination trips the guard.
       def wire_size(args)
         super + (args[:destination] == '/opt/app/source.bin' ? 1_000_000 : 0)
       end

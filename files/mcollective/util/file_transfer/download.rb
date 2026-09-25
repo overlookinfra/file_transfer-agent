@@ -20,12 +20,12 @@ module MCollective
 
         # @param transfer [Transfer] The nodes to fetch from, which drop out as steps fail
         # @param rpc [Rpc]
-        # @param sizing [Sizing]
+        # @param chunk [Integer] The bytes of file content one get reply is asked for
         # @param logger [#debug, #warn]
-        def initialize(transfer:, rpc:, sizing:, logger:)
+        def initialize(transfer:, rpc:, chunk:, logger:)
           @transfer = transfer
           @rpc = rpc
-          @sizing = sizing
+          @chunk = chunk
           @logger = logger
         end
 
@@ -88,18 +88,8 @@ module MCollective
         def download_files(remote, described, staging, landing)
           identities = landing.keys
           delivered = {}
-          max_bytes = @sizing.content_bytes(remote, remote, identities.first)
-          if max_bytes.zero?
-            @transfer.fail(@sizing.too_small_failures(identities, remote, :download))
-            return delivered
-          end
-          # A reply weighs at most what a request carrying the same content
-          # would, for as much of the file as a round asks for.
-          largest = described.values_at(*identities).map { |data| data[:size] }.max
-          reply_wire = @sizing.wire_bytes([max_bytes, largest].min, remote, remote, identities.first)
-          @logger.debug("#{remote} comes in replies of #{max_bytes} bytes, at most #{reply_wire} on the wire")
-          identities.each_slice(@sizing.download_batch_size(reply_wire)) do |group|
-            fetch_file(group, remote, staging, described, max_bytes).each do |identity, staged|
+          identities.each_slice(@rpc.download_batch_size) do |group|
+            fetch_file(group, remote, staging, described, @chunk).each do |identity, staged|
               placed = place_download(identity, staged, landing[identity])
               delivered[identity] = placed if placed
             end

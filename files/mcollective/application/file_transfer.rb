@@ -21,10 +21,10 @@ module MCollective
       END_OF_USAGE
 
       option :chunk_size,
-        arguments: ['--chunk-size BYTES'],
-        description: 'Upper bound on the bytes of file content per request. Without it, the chunk is the most content ' \
-                     'whose request, measured as it would be sent, fits the broker message size limit minus a five ' \
-                     'percent reserve. Set it lower when that limit could not be read and is below the assumed 1 MiB.',
+        arguments: ['--chunk-size KIBIBYTES'],
+        description: 'File content per request in kibibytes, 512 by default, which fits the broker message size limit ' \
+                     'of 1 MiB. Lower it where the limit is smaller. A request over the limit fails its node with ' \
+                     'payload_too_large.',
         type: Integer
 
       option :upload_batch_size,

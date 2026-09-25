@@ -64,17 +64,14 @@ class FakeRpcClient
 end
 
 # Stands in for a connection: every call is recorded and yields the one
-# fake RPC client, pointed at the identities of that call. A measurement
-# is recorded among the calls too, under :measure, and answers what the
-# block given at construction makes of the arguments. The broker limit
-# is read the way the real connection reads it.
+# fake RPC client, pointed at the identities of that call. The broker
+# limit is read the way the real connection reads it.
 class FakeConnection
   attr_reader :client, :wrapper, :calls
 
-  def initialize(wrapper, &measurer)
+  def initialize(wrapper)
     @client = FakeRpcClient.new
     @wrapper = wrapper
-    @measurer = measurer
     @calls = []
   end
 
@@ -90,11 +87,6 @@ class FakeConnection
 
   def max_payload
     @wrapper.instance_variable_get(:@client).server_info[:max_payload]
-  end
-
-  def request_bytes(agent, action, args, identity)
-    @calls << { measure: action, agent: agent, identities: [identity] }
-    @measurer.call(args)
   end
 end
 
@@ -147,22 +139,15 @@ module FileTransferClientHelpers
     args[:data].unpack1('m0')
   end
 
-  # The wire model of the fake: a signed request is an envelope plus the
-  # base64 data, and the transport adds framing around its outer encoding.
-  # The connection's measurement and the fake wrapper's publishing share
-  # it, as a measured and a sent request agree, and a context that
-  # overrides wire_size gives the sent request weight the measurement did
-  # not show.
-  def measured_size(args)
-    framing + MCollective::Util::FileTransfer::Sizing.encoded_bytes(envelope + args[:data].bytesize)
-  end
-
+  # What a sent request weighs in the fake, twice its content and a
+  # little more, standing in for the envelope and the two base64 passes
+  # around it, and more in a context that says a chunk is over the limit.
   def wire_size(args)
-    measured_size(args)
+    (decoded(args).bytesize * 2) + 300
   end
 
-  # put publishes through the fake wrapper, so the guard sees the modeled
-  # wire size, then answers for every addressed identity.
+  # put publishes through the fake wrapper, so the guard sees what the
+  # request weighs, then answers for every addressed identity.
   def stub_put
     rpc.on(:put) do |args, names|
       put_calls << args.merge(identities: names, batch_size: rpc.batch_size)
@@ -194,6 +179,11 @@ module FileTransferClientHelpers
     File.chmod(mode, path)
     path
   end
+
+  # The calls that invoked an action, in order.
+  def action_calls
+    connection.calls
+  end
 end
 
 RSpec.shared_context 'with a file transfer client' do
@@ -201,10 +191,10 @@ RSpec.shared_context 'with a file transfer client' do
 
   let(:max_payload) { 1_048_576 }
   let(:wrapper) { FakeNatsWrapper.new(max_payload) }
-  let(:connection) { fake_connection(wrapper) }
+  let(:connection) { FakeConnection.new(wrapper) }
   let(:rpc) { connection.client }
   let(:log) { FakeLogger.new }
-  let(:chunk_size) { 16_384 }
+  let(:chunk_size) { 16 }
   let(:client_options) { {} }
   let(:client) do
     MCollective::Util::FileTransfer::Client.new(connection: connection, logger: log, chunk_size: chunk_size, **client_options)
@@ -212,8 +202,6 @@ RSpec.shared_context 'with a file transfer client' do
   let(:node1) { 'node1.example.com' }
   let(:node2) { 'node2.example.com' }
   let(:nodes) { [node1, node2] }
-  let(:envelope) { 2_000 }
-  let(:framing) { 300 }
   let(:put_calls) { [] }
   let(:workdir) { Dir.mktmpdir('file_transfer-client') }
 
@@ -225,17 +213,4 @@ RSpec.shared_context 'with a file transfer client' do
   end
 
   after { FileUtils.remove_entry_secure(workdir) }
-
-  # A connection over the wrapper whose measurements follow the wire
-  # model, for the shared context and for a context that swaps the wrapper.
-  def fake_connection(wrapper)
-    FakeConnection.new(wrapper) do |args|
-      MCollective::Util::FileTransfer::Connection::Request.new(signed_bytes: envelope + args[:data].bytesize, wire_bytes: measured_size(args))
-    end
-  end
-
-  # The calls that invoke an action, leaving out the measurements.
-  def action_calls
-    connection.calls.reject { |call| call[:measure] }
-  end
 end

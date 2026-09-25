@@ -18,12 +18,12 @@ module MCollective
 
         # @param transfer [Transfer] The nodes still taking part, which drop out as chunks fail
         # @param rpc [Rpc]
-        # @param sizing [Sizing]
+        # @param chunk [Integer] The bytes of file content one put carries
         # @param logger [#debug]
-        def initialize(transfer:, rpc:, sizing:, logger:)
+        def initialize(transfer:, rpc:, chunk:, logger:)
           @transfer = transfer
           @rpc = rpc
-          @sizing = sizing
+          @chunk = chunk
           @logger = logger
         end
 
@@ -42,14 +42,7 @@ module MCollective
           identities = landing.keys & @transfer.active
           return [] if identities.empty?
 
-          # Measured against the longest destination, the largest request
-          # any chunk of the file takes.
-          requested = @sizing.content_bytes(name, landing.values.compact.max_by(&:bytesize) || name, identities.first)
-          if requested.zero?
-            @transfer.fail(@sizing.too_small_failures(identities, name, :upload))
-            return []
-          end
-          @logger.debug("#{name} goes in chunks of #{requested} bytes")
+          requested = @chunk
           stat = File.stat(local_path)
           size = stat.size
           mode ||= FileSender.permission_bits(stat)
@@ -108,23 +101,10 @@ module MCollective
         end
 
         # Sends one chunk to the identities, a batch of them per request,
-        # under the publish guard, and applies the replies.
+        # and applies the replies.
         def send_chunk(identities, args, context, timeout: nil)
-          response = @rpc.call(identities, context, timeout: timeout, batch_size: @sizing.upload_batch_size,
-            guard: @sizing.max_payload) { |client| client.put(args) }
+          response = @rpc.call(identities, context, timeout: timeout, batch_size: @rpc.upload_batch_size) { |client| client.put(args) }
           @transfer.fail(response.errors)
-          log_wire_size(context, args, response.wire_bytes)
-        end
-
-        # The wire size of the chunk request against its content, read off
-        # a debug log to check the expansion the sizing assumes. The content
-        # size comes back from the strict base64 of the data. Scaffolding
-        # for the cluster run, to be removed before 1.0.0 ships.
-        def log_wire_size(context, args, wire)
-          return unless wire.positive?
-
-          content = (args[:data].bytesize / 4 * 3) - args[:data].count('=')
-          @logger.debug("#{context} weighed #{wire} bytes on the wire for #{content} bytes of content")
         end
       end
     end

@@ -55,8 +55,8 @@ choria plugin generate ddl file_transfer.json file_transfer.ddl --convert
 
 The module also ships the client side of the protocol, the MCollective util
 plugin `MCollective::Util::FileTransfer`, which `mcollective_agent_file_transfer`
-installs on a client host with `client => true`. It sizes chunks to the
-broker's payload limit at run time, verifies every file with SHA-256, keeps
+installs on a client host with `client => true`. It sends files in chunks
+of 512 KiB by default, verifies every file with SHA-256, keeps
 temporary files in sessions the agent owns, and answers an outcome per node
 rather than raising for one node's failure. OpenBolt's Choria transport is
 an adapter over it.
@@ -98,9 +98,8 @@ The arguments of `Client.new`:
   publish one call to every node. Default 30. The final chunk of a file
   and a `stat` with a checksum digest the whole file on the node, so they
   wait the agent's DDL timeout instead when that is longer.
-- `chunk_size`: the most file content one request carries. Without it the
-  measured request and the broker's limit alone decide, so set it when that
-  limit could not be read and is below the assumed 1 MiB.
+- `chunk_size`: the file content one request carries, in kibibytes.
+  Default 512. Lower it where the broker's limit is under 1 MiB.
 - `upload_batch_size`: how many nodes one chunk request is published to at
   once. Without it, as many as keep one batch under 256 MiB in memory on
   the client at the broker's limit.
@@ -111,22 +110,16 @@ The arguments of `Client.new`:
 - `cleanup`: whether sessions are removed afterwards, `true`, `false`, or a
   hash from identity to boolean. Default true.
 
-Chunks are sized by measurement, not by a model. For every file the
-library builds the request the connector would publish for its final
-chunk with no content, with the gem's own message and security objects
-and never sent, which gives the signed request and the transport framing
-as they really are. The content is then what the broker's advertised
-payload limit, less a five percent reserve, leaves room for: base64 puts
-four characters in the signed request for every three content bytes, and
-the connector's outer base64 adds a third again plus an escaped newline
-per sixty characters, so the largest content is arithmetic, capped by
-`chunk_size`. A request of that size is built once more to confirm it. A
-download round asks for as much, since a reply carrying the same content
-weighs less than a request: the node signs nothing and sends no
-certificate. A publish guard refuses a request over the limit before it leaves the client
-and fails those nodes with `payload_too_large`, naming a lower chunk size
-as the remedy. A node that does not answer a chunk is reported as
-`no_response`. Nothing is retried.
+Each request carries 512 KiB of file content by default, which fits the
+broker's default 1 MiB payload limit with the signed envelope, the two
+base64 passes, and the transport headers around it, as the design
+document accounts for. A download round asks for the same content, since
+a reply carrying it weighs less than a request: the node signs nothing
+and sends no certificate. A publish guard refuses a request over the
+limit before it leaves the client and fails those nodes with
+`payload_too_large`, naming a lower chunk size as the remedy, so a broker
+with a smaller limit needs a smaller `chunk_size`. A node that does not
+answer a chunk is reported as `no_response`. Nothing is retried.
 
 A chunk request is published once per node, and the client holds every
 copy in memory until it is written, so a chunk goes to `upload_batch_size`
