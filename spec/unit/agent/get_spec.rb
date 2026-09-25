@@ -224,25 +224,4 @@ RSpec.describe 'the file_transfer agent get action' do
     expect(reply.statuscode).to eq(4)
     expect(reply.statusmsg).to include('The max_bytes input must be at least 0')
   end
-
-  it 'answers missing data when max_bytes is absent' do
-    reply = run_agent('get', { path: source, offset: 0 })
-
-    expect(reply.statuscode).to eq(3)
-    expect(reply.statusmsg).to include('The max_bytes input is required')
-  end
-
-  it 'answers missing data when offset is absent' do
-    reply = run_agent('get', { path: source, max_bytes: 10 })
-
-    expect(reply.statuscode).to eq(3)
-    expect(reply.statusmsg).to include('The offset input is required')
-  end
-
-  it 'answers missing data when path is absent' do
-    reply = run_agent('get', { offset: 0, max_bytes: 10 })
-
-    expect(reply.statuscode).to eq(3)
-    expect(reply.statusmsg).to include('The path input is required')
-  end
 end

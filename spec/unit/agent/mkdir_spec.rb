@@ -132,20 +132,6 @@ RSpec.describe 'the file_transfer agent mkdir action' do
     expect(reply.exitstatus).to eq(0)
   end
 
-  { '0999' => 'a digit above seven', 'rwx' => 'letters', 493 => 'an integer' }.each do |mode, description|
-    it "refuses a mode given as #{description} and creates nothing" do
-      target = File.join(root, 'unmade')
-
-      reply = run_agent('mkdir', { 'path' => target, 'mode' => mode })
-
-      expect(reply.statuscode).to eq(4)
-      expect(reply.statusmsg).to include('The mode input must be three or four octal digits')
-      expect(File.exist?(target)).to be(false)
-      expect(Dir.children(root)).to be_empty
-      expect(reply.stdout).to be_empty
-    end
-  end
-
   it 'applies setgid and setuid bits from a four-digit mode, which the kernel drops at creation' do
     target = File.join(root, 'shared', 'setuid')
 

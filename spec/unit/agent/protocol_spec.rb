@@ -80,22 +80,6 @@ RSpec.describe 'the file_transfer protocol' do
       expect(reply.stderr.lines.length).to be > 1
       expect(reply.stderr.lines[1]).to include('.rb:')
     end
-
-    it 'answers a request whose data is a string instead of an object' do
-      reply = run_agent('mktemp', 'not an object')
-
-      expect(reply.exitstatus).to eq(0)
-      expect(reply.statuscode).to eq(3)
-      expect(reply.statusmsg).to include('session')
-    end
-
-    it 'answers a request whose data is null' do
-      reply = run_agent('mktemp', nil)
-
-      expect(reply.exitstatus).to eq(0)
-      expect(reply.statuscode).to eq(3)
-      expect(reply.statusmsg).to include('session')
-    end
   end
 
   describe 'the request data' do

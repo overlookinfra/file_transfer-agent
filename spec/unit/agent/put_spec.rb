@@ -233,22 +233,6 @@ RSpec.describe 'the file_transfer agent put action' do
         expect(Dir.children(session)).to be_empty
       end
 
-      it 'rejects an offset given as a string and creates nothing' do
-        reply = run_agent('put', chunk_request(offset: '0'))
-
-        expect(reply.statuscode).to eq(4)
-        expect(reply.statusmsg).to include('The offset input must be an integer')
-        expect(Dir.children(session)).to be_empty
-      end
-
-      it 'rejects a boolean given as a string and creates nothing' do
-        reply = run_agent('put', chunk_request(final: 'true'))
-
-        expect(reply.statuscode).to eq(4)
-        expect(reply.statusmsg).to include('The final input must be true or false')
-        expect(Dir.children(session)).to be_empty
-      end
-
       {
         'a name of one dot' => '.',
         'a name of two dots' => '..',

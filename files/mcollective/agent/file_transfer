@@ -25,8 +25,6 @@ module FileTransfer
 
   SESSION_PREFIX = 'file_transfer-'
   UUID_REGEX = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
-  SHA256_REGEX = /\A[0-9a-f]{64}\z/
-  MODE_REGEX = /\A[0-7]{3,4}\z/
 
   DEFAULT_STALE_AFTER = 86_400 # 24 hours
   LIST_DEFAULT_LIMIT = 1000
@@ -96,7 +94,7 @@ module FileTransfer
 
     def initialize(request, settings)
       @action = request['action']
-      @data = request['data'].is_a?(Hash) ? request['data'] : {}
+      @data = request.fetch('data')
       @settings = settings
     end
 
@@ -123,64 +121,41 @@ module FileTransfer
     private
 
     def mktemp
-      path = session_path(string_input('session'))
+      path = session_path(@data.fetch('session'))
       seconds = stale_after
       Dir.mkdir(path, 0o700)
       { 'path' => path, 'swept' => sweep_stale_sessions(temp_root, File.basename(path), seconds) }
     end
 
     def put
-      session = session_path(string_input('session'))
+      session = session_path(@data.fetch('session'))
       raise Failure.new(ABORTED, "Session #{session} does not exist") if session_stat(session).nil?
 
-      name = validated_name(string_input('name'))
+      name = validated_name(@data.fetch('name'))
       offset = integer_input('offset')
-      final = boolean_input('final')
-      digest = optional_input('sha256', SHA256_REGEX, 'a lowercase SHA-256 hex digest')
-      destination = @data['destination'].nil? ? nil : path_input('destination')
-      mode = optional_mode('mode')
+      final = @data.fetch('final', false)
+      digest = @data['sha256']
+      destination = @data['destination'].nil? ? nil : destination_input
+      mode = mode_input
       raise Failure.new(MISSING_DATA, 'The sha256 input is required with final') if final && digest.nil?
-      if destination
-        # Compared by real path, since the root is resolved and a caller
-        # may name it through a link, as /tmp is on macOS. A parent that
-        # does not exist raises here, as the delivery would.
-        parent = File.realpath(File.dirname(destination))
-        if parent == temp_root || parent.start_with?("#{temp_root}/")
-          raise Failure.new(INVALID_DATA, "The destination must be outside the agent's temporary root")
-        end
-      end
 
-      content = decode_chunk(string_input('data'))
+      content = decode_chunk(@data.fetch('data'))
       path = File.join(session, name)
       # The first chunk creates the session file, every later chunk opens
       # it and must find the chunks before it already there.
       file = offset.zero? ? create_session_file(session, name) : open_session_file(session, name, offset)
-      begin
-        file.seek(offset)
-        file.write(content)
-        file.flush
-        size = file.stat.size
-        return { 'bytes' => content.bytesize, 'size' => size, 'sha256' => nil } unless final
-
-        # The last chunk verifies the whole file and sets its mode. The
-        # file then leaves the session for the destination, or stays there
-        # for a caller that uses it in place and removes it with cleanup.
-        actual = Digest::SHA256.file(path).hexdigest
-        unless actual == digest
-          raise Failure.new(ABORTED, "Checksum mismatch for #{name}: expected #{digest}, got #{actual}",
-            'bytes' => content.bytesize, 'size' => size, 'sha256' => actual)
-        end
-        file.chmod(mode) if mode
+      reply = begin
+        written = { 'bytes' => content.bytesize, 'size' => write_chunk(file, offset, content), 'sha256' => nil }
+        final ? written.merge('sha256' => verify_session_file(file, path, name, digest, mode, written)) : written
       ensure
         file.close
       end
-
-      deliver(path, destination) if destination
-      { 'bytes' => content.bytesize, 'size' => size, 'sha256' => actual }
+      deliver(path, destination) if final && destination
+      reply
     end
 
     def cleanup
-      path = session_path(string_input('session'))
+      path = session_path(@data.fetch('session'))
       return { 'removed' => false } if session_stat(path).nil?
 
       FileUtils.remove_entry_secure(path)
@@ -204,7 +179,7 @@ module FileTransfer
 
     def stat
       path = path_input('path')
-      checksum = boolean_input('checksum')
+      checksum = @data.fetch('checksum', false)
       description = describe(path)
       if description.nil?
         return { 'exists' => false, 'type' => nil, 'symlink' => nil, 'size' => nil, 'mode' => nil, 'mtime' => nil,
@@ -238,7 +213,7 @@ module FileTransfer
     # to mkdir. Without a mode the umask applies. A directory that is
     # already there is left as it is, and anything else in the way raises.
     def mkdir
-      FileUtils.mkdir_p(path_input('path'), mode: optional_mode('mode'))
+      FileUtils.mkdir_p(path_input('path'), mode: mode_input)
       {}
     end
 
@@ -272,6 +247,8 @@ module FileTransfer
       @temp_root = resolved
     end
 
+    # The DDL refuses anything but a lowercase UUID, and the id becomes
+    # part of a path, so it is checked again here.
     def session_path(session)
       raise Failure.new(INVALID_DATA, 'The session must be a lowercase UUID') unless session.match?(UUID_REGEX)
 
@@ -373,6 +350,28 @@ module FileTransfer
       File.new(path, File::RDWR | NOFOLLOW | File::BINARY)
     end
 
+    # Writes the chunk at its offset and answers the size of the file after it.
+    def write_chunk(file, offset, content)
+      file.seek(offset)
+      file.write(content)
+      file.flush
+      file.stat.size
+    end
+
+    # The last chunk verifies the whole file and sets its mode, and answers
+    # the digest. The file then leaves the session for the destination, or
+    # stays there for a caller that uses it in place and removes it with
+    # cleanup. A mismatch answers what was written along with the failure.
+    def verify_session_file(file, path, name, digest, mode, written)
+      actual = Digest::SHA256.file(path).hexdigest
+      unless actual == digest
+        raise Failure.new(ABORTED, "Checksum mismatch for #{name}: expected #{digest}, got #{actual}", written.merge('sha256' => actual))
+      end
+
+      file.chmod(mode) if mode
+      actual
+    end
+
     # Chunk data travels base64 encoded in both directions.
     def decode_chunk(data)
       data.unpack1('m0')
@@ -436,43 +435,20 @@ module FileTransfer
 
     # Inputs
 
-    def string_input(key)
-      value = @data[key]
-      raise Failure.new(MISSING_DATA, "The #{key} input is required") if value.nil?
-      raise Failure.new(INVALID_DATA, "The #{key} input must be a string") unless value.is_a?(String)
+    # The server validates every input against the DDL before the agent
+    # starts, so the checks here are the ones the DDL cannot express.
 
-      value
-    end
-
-    def optional_input(key, pattern, description)
-      value = @data[key]
-      return nil if value.nil?
-      raise Failure.new(INVALID_DATA, "The #{key} input must be #{description}") unless value.is_a?(String) && value.match?(pattern)
-
-      value
-    end
-
+    # An integer is not bounded below by the DDL. An absent optional one
+    # takes the default the DDL documents, which the server does not apply.
     def integer_input(key, default: nil)
       value = @data.fetch(key, default)
-      value = default if value.nil?
-      raise Failure.new(MISSING_DATA, "The #{key} input is required") if value.nil?
-      raise Failure.new(INVALID_DATA, "The #{key} input must be an integer") unless value.is_a?(Integer)
       raise Failure.new(INVALID_DATA, "The #{key} input must be at least 0") if value.negative?
 
       value
     end
 
-    # An absent boolean input is false.
-    def boolean_input(key)
-      value = @data[key]
-      return false if value.nil?
-      raise Failure.new(INVALID_DATA, "The #{key} input must be true or false") unless [true, false].include?(value)
-
-      value
-    end
-
     def path_input(key)
-      value = string_input(key)
+      value = @data.fetch(key)
       unless value.valid_encoding? && !value.include?("\0") && File.absolute_path?(value)
         raise Failure.new(INVALID_DATA, "The #{key} input must be an absolute path")
       end
@@ -480,9 +456,23 @@ module FileTransfer
       File.expand_path(value)
     end
 
-    def optional_mode(key)
-      value = optional_input(key, MODE_REGEX, 'three or four octal digits')
-      value&.to_i(8)
+    # The destination a verified file moves to, which must lie outside the
+    # agent's temporary root. Compared by real path, since the root is
+    # resolved and a caller may name it through a link, as /tmp is on
+    # macOS. A parent that does not exist raises here, as the delivery would.
+    def destination_input
+      destination = path_input('destination')
+      parent = File.realpath(File.dirname(destination))
+      if parent == temp_root || parent.start_with?("#{temp_root}/")
+        raise Failure.new(INVALID_DATA, "The destination must be outside the agent's temporary root")
+      end
+
+      destination
+    end
+
+    # The mode as the octal digits the DDL validated, or nil without one.
+    def mode_input
+      @data['mode']&.to_i(8)
     end
 
     def stale_after
@@ -495,6 +485,9 @@ module FileTransfer
       raise Failure.new(ABORTED, "The stale_after setting must be a positive number of seconds, not #{value.inspect}")
     end
 
+    # The DDL regex refuses the same shapes on every platform, and the name
+    # becomes part of a path, so it is checked again here, with the rules
+    # of Windows names that a regex in the DDL cannot carry per platform.
     def validated_name(name)
       components = name.valid_encoding? ? name.split('/', -1) : []
       valid = !components.empty? && components.all? do |component|

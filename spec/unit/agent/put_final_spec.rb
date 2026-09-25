@@ -87,25 +87,11 @@ RSpec.describe 'file_transfer put final chunk' do
     end
   end
 
-  describe 'a final chunk whose digest is missing or malformed' do
+  describe 'a final chunk whose digest is missing or wrong' do
     it 'answers MissingData when final is set without a sha256' do
       reply = run_agent('put', { session: uuid, name: session_name, offset: 0, data: chunk(content), final: true })
 
       expect(reply.statuscode).to eq(3)
-      expect(reply.statusmsg).to include('sha256')
-    end
-
-    it 'answers InvalidData for an uppercase sha256' do
-      reply = run_agent('put', final_chunk(sha256: sha256(content).upcase))
-
-      expect(reply.statuscode).to eq(4)
-      expect(reply.statusmsg).to include('sha256')
-    end
-
-    it 'answers InvalidData for a sha256 shorter than 64 characters' do
-      reply = run_agent('put', final_chunk(sha256: sha256(content)[0, 63]))
-
-      expect(reply.statuscode).to eq(4)
       expect(reply.statusmsg).to include('sha256')
     end
 
