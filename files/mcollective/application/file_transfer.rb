@@ -62,7 +62,7 @@ module MCollective
       end
 
       def main
-        identities = rpcclient(Util::FileTransfer::AGENT).discover
+        identities = rpcclient(Util::FileTransfer::Rpc::AGENT).discover
         if identities.empty?
           puts 'No nodes matched the filter'
           exit 1

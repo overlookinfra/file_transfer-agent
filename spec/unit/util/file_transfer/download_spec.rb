@@ -78,17 +78,26 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(get_calls.map { |call| call[:identities] }).to eq([nodes])
   end
 
+  it 'waits the DDL timeout for stat, which digests the whole file on the node, and the rpc timeout for each get' do
+    stub_file_stats
+    stub_get
+
+    client.download('/var/log/app.log', destinations)
+
+    expect(action_calls.first).to include(timeout: 120)
+    expect(action_calls.last).to include(timeout: 30)
+  end
+
   context 'with an rpc timeout above the timeout the DDL declares' do
     let(:client_options) { { rpc_timeout: 300 } }
 
-    it 'waits no longer than the DDL timeout for stat, which digests the whole file on the node' do
+    it 'waits the rpc timeout for stat as well' do
       stub_file_stats
       stub_get
 
       client.download('/var/log/app.log', destinations)
 
-      expect(action_calls.first).to include(timeout: 120)
-      expect(action_calls.last).to include(timeout: 300)
+      expect(action_calls.map { |call| call[:timeout] }.uniq).to eq([300])
     end
   end
 
@@ -119,7 +128,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
   # so two fit under three quarters of a 10000 byte backlog and a third
   # does not.
   context 'with replies large enough that three nodes overrun the broker backlog' do
-    before { stub_const('MCollective::Util::FileTransfer::Transfer::BROKER_PENDING_LIMIT', 10_000) }
+    before { stub_const('MCollective::Util::FileTransfer::Sizing::BROKER_PENDING_LIMIT', 10_000) }
 
     let(:node3) { 'node3.example.com' }
     let(:nodes) { [node1, node2, node3] }

@@ -1,176 +1,118 @@
 # frozen_string_literal: true
 
 require 'mcollective'
+require_relative 'outcome'
+require_relative 'publish_guard'
 
 module MCollective
   module Util
     module FileTransfer
-      # The RPC calls of a transfer, the timeouts they run under, and the
-      # broker's limit on what they may carry. Every call answers a response
-      # hash with the replies by identity under :responded, the failures by
-      # identity under :errors as Outcomes, and :rpc_failed when the whole
-      # call raised.
+      # One call to the file_transfer agent at a time, with every node's
+      # reply or failure sorted by identity. Status code 1 is a failure for
+      # every one of the agent's actions, a reply without a data hash is
+      # one too, a code above 1 is an RPC error, a missing reply is
+      # no_response, and an exception fails every identity.
       class Rpc
-        MIN_CHUNK_TIMEOUT = 5
-        CHUNK_TIMEOUT_FACTOR = 3
-        BYTES_PER_EXTRA_SECOND = 100_000_000
+        AGENT = 'file_transfer'
+
+        # What one call answered. The replies by identity under responded,
+        # the failures by identity under errors as Outcomes, and the largest
+        # message a guarded call published, 0 for an unguarded one or one
+        # nothing could guard. The wire_bytes field is scaffolding for the
+        # cluster run, to be removed before 1.0.0 ships.
+        Response = Data.define(:responded, :errors, :wire_bytes) do
+          def self.unsent(errors)
+            new(responded: {}, errors: errors, wire_bytes: 0)
+          end
+        end
 
         attr_reader :rpc_timeout
 
+        # @param connection [Connection] Builds the RPC clients
+        # @param logger [#debug, #warn, #warn_once]
+        # @param rpc_timeout [Numeric] Seconds to wait for every node's reply to one call, and to
+        #   publish one call to every node
         def initialize(connection, logger, rpc_timeout)
           @connection = connection
           @logger = logger
           @rpc_timeout = rpc_timeout
+          @guard = PublishGuard.new(connection, logger)
         end
 
-        # One call to the file_transfer agent, with the rules that status
-        # code 1 is a failure for every one of its actions and that a reply
-        # without a data hash is one too. The publish timeout is raised to
-        # the rpc timeout so that one chunk reaches every node of a large
-        # group. A batch size sends the call to that many identities at a
-        # time, each batch with its own publish and reply windows.
-        def agent_call(identities, context, timeout: nil, batch_size: nil, &)
-          return empty_response if identities.empty?
-
-          response = request(AGENT, identities, context, timeout: timeout || @rpc_timeout, publish_timeout: @rpc_timeout,
-                             batch_size: batch_size, &)
-          response[:statuscodes].each do |identity, code|
-            next unless code == 1
-
-            response[:responded].delete(identity)
-            response[:errors][identity] = Outcome.failure(identity, :transfer_failed,
-              "#{context} on #{identity} failed: #{response[:statusmsgs][identity]}")
-          end
-          response[:responded].reject { |_identity, data| data.is_a?(Hash) }.each_key do |identity|
-            response[:responded].delete(identity)
-            response[:errors][identity] = Outcome.failure(identity, :transfer_failed, "#{context} on #{identity} answered without usable data")
-          end
-          response
+        # The wait for a call that digests a whole file on the node, the
+        # final put of a file and a stat with a checksum. The node's server
+        # stops the agent at the timeout its DDL declares and answers
+        # nothing after it, so that is the longest such a call can take,
+        # and the rpc timeout applies only when it is longer.
+        def digest_timeout
+          [@rpc_timeout, ddl_timeout].max
         end
 
-        # The lengths of the request the connector would publish for one put
-        # with these arguments to the identity, built as the gem builds it
-        # and never sent, see Connection.request_bytes.
-        def request_bytes(args, identity)
-          @connection.with_client(AGENT, [identity], timeout: @rpc_timeout, publish_timeout: nil) do |client|
-            Connection.request_bytes(client, 'put', args, identity)
-          end
-        end
+        # Invokes the action the block calls on the yielded RPC client and
+        # answers the Response. The publish timeout is the rpc timeout, so
+        # that one chunk reaches every node of a large group. A batch size
+        # sends the call to that many identities at a time in MCollective's
+        # batches without its pause between them, each batch with its own
+        # publish and reply windows. A guard is the broker's limit, and a
+        # message over it is refused before it leaves the client, which
+        # fails the identities with payload_too_large.
+        #
+        # @param identities [Array<String>] The nodes to address
+        # @param context [String] Names the call in messages, such as "file_transfer.put app.tar"
+        # @param timeout [Numeric, nil] Seconds to wait for the replies, the rpc timeout by default
+        # @return [Response]
+        def call(identities, context, timeout: nil, batch_size: nil, guard: nil)
+          return Response.unsent({}) if identities.empty?
 
-        # One call to any agent, yielding the RPC client to invoke the action
-        # on. Status codes above 1 are RPC errors, a missing reply is a
-        # no_response failure, and an exception fails every identity. A
-        # batch size makes the client send the call in MCollective's batches
-        # without its pause between them.
-        def request(agent, identities, context, timeout:, publish_timeout:, batch_size: nil)
-          results = @connection.with_client(agent, identities, timeout: timeout, publish_timeout: publish_timeout) do |client|
+          results = @connection.with_client(AGENT, identities, timeout: timeout || @rpc_timeout, publish_timeout: @rpc_timeout) do |client|
             if batch_size
               client.batch_size = batch_size
               client.batch_sleep_time = 0
             end
-            yield client
+            guard ? @guard.guarding(guard) { yield client } : yield(client)
           end
-          by_sender = index_by_sender(results.is_a?(Array) ? results : [], identities, context)
-          response = empty_response
-          identities.each do |identity|
-            result = by_sender[identity]
-            if result.nil?
-              response[:errors][identity] = Outcome.failure(identity, :no_response, "No response from #{identity} for #{context}")
-              next
-            end
-
-            response[:statuscodes][identity] = result[:statuscode]
-            response[:statusmsgs][identity] = result[:statusmsg]
-            if result[:statuscode] > 1
-              response[:errors][identity] = Outcome.failure(identity, :rpc_error,
-                "#{context} on #{identity} returned RPC error: #{result[:statusmsg]} (code #{result[:statuscode]})")
-            else
-              response[:responded][identity] = result[:data]
-            end
-          end
-          response
+          responded, errors = sort_replies(results, identities, context)
+          Response.new(responded: responded, errors: errors, wire_bytes: guard ? @guard.largest_published : 0)
+        rescue PayloadTooLarge => e
+          Response.unsent(Outcome.failures(identities, :payload_too_large) do |identity|
+            "#{context} on #{identity} was not sent. #{e.message}. Lower the chunk size."
+          end)
         rescue StandardError => e
           @logger.warn("#{context} RPC call failed: #{e.class}: #{e.message}")
           @logger.debug(e.backtrace.join("\n")) if e.backtrace
-          errors = Outcome.failures(identities, :rpc_failed) { |identity| "#{context} failed on #{identity}: #{e.class}: #{e.message}" }
-          empty_response.merge(errors: errors, rpc_failed: true)
-        end
-
-        # The broker's advertised payload limit, or the default with a
-        # warning naming why it could not be read.
-        def max_payload
-          limit = @connection.nats_wrapper.instance_variable_get(:@client).server_info[:max_payload]
-          return limit if limit.is_a?(Integer) && limit.positive?
-
-          unknown_max_payload("the server info says #{limit.inspect}")
-        rescue StandardError => e
-          unknown_max_payload("#{e.class}: #{e.message}")
-        end
-
-        # Runs the block with the publish guard set to the limit, so a
-        # message over it raises PayloadTooLarge before it leaves the client
-        # instead of making the broker close the connection. Without a
-        # wrapper to hook the block still runs, after a warning that the
-        # guard is off.
-        def guarding(limit)
-          begin
-            wrapper = @connection.nats_wrapper
-            if wrapper.class.method_defined?(:publish)
-              PublishHook.install(wrapper.class)
-            else
-              guard_unavailable("#{wrapper.inspect} has no publish method")
-            end
-          rescue StandardError => e
-            guard_unavailable("#{e.class}: #{e.message}")
-          end
-          PublishHook.limit = limit
-          PublishHook.largest = 0
-          yield
-        ensure
-          PublishHook.limit = nil
-        end
-
-        # The largest message the last guarded call published, or 0 when
-        # no wrapper could be hooked.
-        def largest_published
-          PublishHook.largest
-        end
-
-        # Three times the slowest chunk so far, at least MIN_CHUNK_TIMEOUT,
-        # and never above the rpc timeout. An rpc timeout below the floor is
-        # the whole budget, so the floor cannot apply.
-        def chunk_timeout(transfer)
-          return @rpc_timeout if transfer.slowest_chunk.nil? || @rpc_timeout <= MIN_CHUNK_TIMEOUT
-
-          (transfer.slowest_chunk * CHUNK_TIMEOUT_FACTOR).ceil.clamp(MIN_CHUNK_TIMEOUT, @rpc_timeout)
-        end
-
-        # The agent's DDL timeout, the longest a node runs one action before
-        # its server stops waiting and answers nothing, read from the DDL
-        # the client loads.
-        def ddl_timeout
-          @ddl_timeout ||= DDL.new(AGENT).meta[:timeout]
-        end
-
-        # The rpc timeout plus a second per 100 MB of file, capped at the DDL
-        # timeout unless the rpc timeout is itself above that.
-        def final_timeout(size)
-          (@rpc_timeout + (size / BYTES_PER_EXTRA_SECOND)).clamp(@rpc_timeout, [ddl_timeout, @rpc_timeout].max)
+          Response.unsent(Outcome.failures(identities, :rpc_failed) { |identity| "#{context} failed on #{identity}: #{e.class}: #{e.message}" })
         end
 
         private
 
-        def unknown_max_payload(reason)
-          @logger.warn_once('file_transfer_max_payload_unknown',
-            "The file transfer client could not read the broker's message size limit (#{reason}) and assumes " \
-            "#{Sizing::DEFAULT_MAX_PAYLOAD} bytes")
-          Sizing::DEFAULT_MAX_PAYLOAD
+        # The timeout the agent's DDL declares, read from the DDL the client
+        # loads, since the node enforces the value in its own copy.
+        def ddl_timeout
+          @ddl_timeout ||= DDL.new(AGENT).meta[:timeout]
         end
 
-        def guard_unavailable(reason)
-          @logger.warn_once('file_transfer_guard_unavailable',
-            "The file transfer client cannot check its requests against the broker's message size limit (#{reason}), " \
-            'so a request over it would drop the connection instead of failing')
+        # The data of every identity that answered with status 0 and a data
+        # hash, and an Outcome for every other identity.
+        def sort_replies(results, identities, context)
+          by_sender = index_by_sender(results, identities, context)
+          responded = {}
+          errors = {}
+          identities.each do |identity|
+            result = by_sender[identity]
+            if result.nil?
+              errors[identity] = Outcome.failure(identity, :no_response, "No response from #{identity} for #{context}")
+            elsif result[:statuscode] > 1
+              errors[identity] = Outcome.failure(identity, :rpc_error,
+                "#{context} on #{identity} returned RPC error: #{result[:statusmsg]} (code #{result[:statuscode]})")
+            elsif result[:statuscode] == 1
+              errors[identity] = Outcome.failure(identity, :transfer_failed, "#{context} on #{identity} failed: #{result[:statusmsg]}")
+            elsif !result[:data].is_a?(Hash)
+              errors[identity] = Outcome.failure(identity, :transfer_failed, "#{context} on #{identity} answered without usable data")
+            else
+              responded[identity] = result[:data]
+            end
+          end
+          [responded, errors]
         end
 
         # The first reply per identity, from the identities addressed only.
@@ -190,10 +132,6 @@ module MCollective
             end
           end
           by_sender
-        end
-
-        def empty_response
-          { responded: {}, errors: {}, rpc_failed: false, statuscodes: {}, statusmsgs: {} }
         end
       end
     end

@@ -95,7 +95,9 @@ The arguments of `Client.new`:
 - `logger`: any object with `debug(message)`, `warn(message)`, and
   `warn_once(id, message)`. The default writes to `MCollective::Log`.
 - `rpc_timeout`: seconds to wait for every node's reply to one call, and to
-  publish one call to every node. Default 30.
+  publish one call to every node. Default 30. The final chunk of a file
+  and a `stat` with a checksum digest the whole file on the node, so they
+  wait the agent's DDL timeout instead when that is longer.
 - `chunk_size`: the most file content one request carries. Without it the
   measured request and the broker's limit alone decide, so set it when that
   limit could not be read and is below the assumed 1 MiB.

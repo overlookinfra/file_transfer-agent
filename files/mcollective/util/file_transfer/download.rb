@@ -4,6 +4,7 @@ require 'digest/sha2'
 require 'fileutils'
 require 'securerandom'
 require 'tmpdir'
+require_relative 'outcome'
 
 module MCollective
   module Util
@@ -13,43 +14,50 @@ module MCollective
       # against the digest the node reported before it was read.
       class Download
         DOWNLOADABLE_TYPES = ['file', 'directory'].freeze
+        # A name Windows treats as a device rather than a file, with or
+        # without an extension.
+        WINDOWS_RESERVED_NAMES = /\A(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?\z/i
 
-        def initialize(client)
-          @rpc = client.rpc
-          @logger = client.logger
-          @chunk_size = client.chunk_size
-          @download_batch_size = client.download_batch_size
+        # @param transfer [Transfer] The nodes to fetch from, which drop out as steps fail
+        # @param rpc [Rpc]
+        # @param sizing [Sizing]
+        # @param logger [#debug, #warn]
+        def initialize(transfer:, rpc:, sizing:, logger:)
+          @transfer = transfer
+          @rpc = rpc
+          @sizing = sizing
+          @logger = logger
         end
 
         # See Client#download.
         def run(source, destinations)
-          transfer = Transfer.start(destinations.keys, rpc: @rpc, logger: @logger, chunk_size: @chunk_size)
-          described = describe_sources(transfer, transfer.active, source)
-          files = transfer.active.select { |identity| described[identity][:type] == 'file' }
-          trees = transfer.active - files
+          described = describe_sources(@transfer.active, source)
+          files = @transfer.active.select { |identity| described[identity][:type] == 'file' }
+          trees = @transfer.active - files
           delivered = {}
           Dir.mktmpdir('file_transfer-download') do |staging|
             unless files.empty?
-              delivered.merge!(download_files(transfer, files, source, described, staging) do |identity|
-                File.join(destinations[identity], File.basename(source))
-              end)
+              landing = files.to_h { |identity| [identity, File.join(destinations[identity], File.basename(source))] }
+              delivered.merge!(download_files(source, described, staging, landing))
             end
-            delivered.merge!(download_trees(transfer, trees, source, destinations, staging)) unless trees.empty?
+            delivered.merge!(download_trees(trees, source, destinations, staging)) unless trees.empty?
           end
-          transfer.outcomes { |identity| delivered[identity] }
+          @transfer.outcomes { |identity| delivered[identity] }
         end
 
+        private
+
         # stat with checksum on the identities, which digests the whole file
-        # on the node. Files and directories continue, anything else is a
-        # failure for that node.
-        def describe_sources(transfer, identities, source)
-          response = @rpc.agent_call(identities, "file_transfer.stat #{source}", timeout: [@rpc.rpc_timeout, @rpc.ddl_timeout].min) do |client|
+        # on the node, so the call waits the digest timeout. Files and
+        # directories continue, anything else is a failure for that node.
+        def describe_sources(identities, source)
+          response = @rpc.call(identities, "file_transfer.stat #{source}", timeout: @rpc.digest_timeout) do |client|
             client.stat(path: source, checksum: true)
           end
-          transfer.fail(response[:errors])
+          @transfer.fail(response.errors)
           described = {}
           errors = {}
-          response[:responded].each do |identity, data|
+          response.responded.each do |identity, data|
             if !data[:exists]
               errors[identity] = Outcome.failure(identity, :transfer_failed, "#{source} does not exist on #{identity}")
             elsif !DOWNLOADABLE_TYPES.include?(data[:type])
@@ -63,7 +71,7 @@ module MCollective
               described[identity] = data
             end
           end
-          transfer.fail(errors)
+          @transfer.fail(errors)
           described
         end
 
@@ -71,29 +79,28 @@ module MCollective
           data[:size].is_a?(Integer) && !data[:size].negative? && data[:sha256].is_a?(String)
         end
 
-        # Fetches one remote file from the identities in batches and moves
-        # each verified copy from the staging directory onto the local path
-        # the block answers for its identity, or nowhere when it answers nil.
-        # Answers the final local path per identity that succeeded.
-        def download_files(transfer, identities, remote, described, staging)
+        # Fetches one remote file from the identities in landing, in
+        # batches, and moves each verified copy from the staging directory
+        # onto the local path landing names for its identity. Answers the
+        # final local path per identity that succeeded.
+        #
+        # @param landing [Hash{String => String}] Identity to the local path its copy ends up at
+        def download_files(remote, described, staging, landing)
+          identities = landing.keys
           delivered = {}
-          max_bytes = transfer.sizing.content_bytes(remote, remote)
+          max_bytes = @sizing.content_bytes(remote, remote, identities.first)
           if max_bytes.zero?
-            transfer.fail(Outcome.failures(identities, :payload_too_large) do |identity|
-              "The broker's payload limit of #{transfer.sizing.max_payload} bytes leaves less than " \
-                "#{Sizing::MINIMUM_CHUNK} bytes of file content per reply, so #{remote} cannot be fetched from #{identity}"
-            end)
+            @transfer.fail(@sizing.too_small_failures(identities, remote, :download))
             return delivered
           end
           # A reply weighs at most what a request carrying the same content
           # would, for as much of the file as a round asks for.
           largest = described.values_at(*identities).map { |data| data[:size] }.max
-          reply_wire = transfer.sizing.wire_bytes([max_bytes, largest].min, remote, remote)
+          reply_wire = @sizing.wire_bytes([max_bytes, largest].min, remote, remote, identities.first)
           @logger.debug("#{remote} comes in replies of #{max_bytes} bytes, at most #{reply_wire} on the wire")
-          identities.each_slice(transfer.download_batch_size(@download_batch_size, reply_wire)) do |group|
-            fetch_file(transfer, group, remote, staging, described, max_bytes).each do |identity, staged|
-              final = yield(identity)
-              placed = final && place_download(transfer, identity, staged, final)
+          identities.each_slice(@sizing.download_batch_size(reply_wire)) do |group|
+            fetch_file(group, remote, staging, described, max_bytes).each do |identity, staged|
+              placed = place_download(identity, staged, landing[identity])
               delivered[identity] = placed if placed
             end
           end
@@ -105,9 +112,9 @@ module MCollective
         # error rather than a place to nest the file in, and the copy crosses
         # filesystems beside its destination first, so the final path is
         # never half written.
-        def place_download(transfer, identity, staged, final)
+        def place_download(identity, staged, final)
           if File.directory?(final)
-            transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
+            @transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
               "#{final} is a directory, so the download from #{identity} was not placed there"))
             return nil
           end
@@ -122,7 +129,7 @@ module MCollective
             final
           rescue SystemCallError => e
             FileUtils.rm_f(beside)
-            transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
+            @transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
               "#{final} could not be written from #{identity}: #{e.class}: #{e.message}"))
             nil
           end
@@ -133,24 +140,24 @@ module MCollective
         # the group at eof, and a node still sending past the size stat
         # reported is dropped. The digest of each complete file is compared
         # with the one stat reported before the transfer started.
-        def fetch_file(transfer, group, remote, staging, expected, max_bytes)
+        def fetch_file(group, remote, staging, expected, max_bytes)
           handles = group.to_h { |identity| [identity, File.new(File.join(staging, SecureRandom.hex(16)), 'wb')] }
           pending = group.dup
           offset = 0
           begin
-            while transfer.active? && !pending.empty?
-              pending &= transfer.active
+            while @transfer.active? && !pending.empty?
+              pending &= @transfer.active
               break if pending.empty?
 
-              pending -= fetch_round(transfer, pending, remote, offset, max_bytes, handles)
-              pending &= transfer.active
+              pending -= fetch_round(pending, remote, offset, max_bytes, handles)
+              pending &= @transfer.active
               offset += max_bytes
-              transfer.fail(overrun_failures(pending, remote, offset, expected))
+              @transfer.fail(overrun_failures(pending, remote, offset, expected))
             end
           ensure
             handles.each_value(&:close)
           end
-          verify_downloads(transfer, group, remote, handles, expected)
+          verify_downloads(group, remote, handles, expected)
         end
 
         # Nodes still sending once the offset passes the size their stat reported.
@@ -160,12 +167,11 @@ module MCollective
         end
 
         # Answers the identities that reached eof.
-        def fetch_round(transfer, pending, remote, offset, max_bytes, handles)
+        def fetch_round(pending, remote, offset, max_bytes, handles)
           asked = pending.to_set
           finished = []
           write_errors = {}
-          started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          response = @rpc.agent_call(pending, "file_transfer.get #{remote}", timeout: @rpc.chunk_timeout(transfer)) do |client|
+          response = @rpc.call(pending, "file_transfer.get #{remote}") do |client|
             collected = []
             client.get(path: remote, offset: offset, max_bytes: max_bytes) do |_payload, result|
               collected << result
@@ -188,9 +194,8 @@ module MCollective
             end
             collected
           end
-          transfer.record_chunk(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started)
-          transfer.fail(response[:errors])
-          transfer.fail(write_errors)
+          @transfer.fail(response.errors)
+          @transfer.fail(write_errors)
           finished - write_errors.keys
         end
 
@@ -205,10 +210,10 @@ module MCollective
           chunk
         end
 
-        def verify_downloads(transfer, group, remote, handles, expected)
-          digests = (group & transfer.active).to_h { |identity| [identity, Digest::SHA256.file(handles[identity].path).hexdigest] }
+        def verify_downloads(group, remote, handles, expected)
+          digests = (group & @transfer.active).to_h { |identity| [identity, Digest::SHA256.file(handles[identity].path).hexdigest] }
           matched, changed = digests.partition { |identity, actual| actual == expected[identity][:sha256] }
-          transfer.fail(Outcome.failures(changed.map(&:first), :checksum_mismatch) do |identity|
+          @transfer.fail(Outcome.failures(changed.map(&:first), :checksum_mismatch) do |identity|
             "#{remote} on #{identity} changed during the download: expected #{expected[identity][:sha256]}, got #{digests[identity]}"
           end)
           matched.to_h { |identity, _actual| [identity, handles[identity].path] }
@@ -217,11 +222,11 @@ module MCollective
         # Lists the remote tree on every node, then fetches each file from
         # the nodes that have it. Trees that differ between nodes are handled
         # file by file.
-        def download_trees(transfer, identities, source, destinations, staging)
-          directories, files = walk_remote_tree(transfer, identities, source)
-          delivered = create_tree_directories(transfer, directories, destinations, source)
-          download_tree_files(transfer, files, source, destinations, staging)
-          delivered.slice(*transfer.active)
+        def download_trees(identities, source, destinations, staging)
+          directories, files = walk_remote_tree(identities, source)
+          delivered = create_tree_directories(directories, destinations, source)
+          download_tree_files(files, source, destinations, staging)
+          delivered.slice(*@transfer.active)
         end
 
         # The directories and the files of the tree, breadth first, each as
@@ -230,21 +235,21 @@ module MCollective
         # warning, so the walk cannot loop. Entry names come from the node,
         # so each one has to be a plain file name before it becomes part of
         # a local path.
-        def walk_remote_tree(transfer, identities, source)
+        def walk_remote_tree(identities, source)
           files = Hash.new { |hash, key| hash[key] = [] }
           directories = Hash.new { |hash, key| hash[key] = [] }
           queue = [['', identities]]
           until queue.empty?
             relative, group = queue.shift
-            group &= transfer.active
+            group &= @transfer.active
             next if group.empty?
 
             remote_dir = relative.empty? ? source : File.join(source, relative)
             subdirectories = Hash.new { |hash, key| hash[key] = [] }
-            list_remote(transfer, group, remote_dir).each do |identity, entries|
+            list_remote(group, remote_dir).each do |identity, entries|
               odd = entries.find { |entry| !plain_name?(entry[:name]) }
               if odd
-                transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
+                @transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
                   "#{remote_dir} on #{identity} lists #{odd[:name].inspect}, which is not a plain file name"))
                 next
               end
@@ -268,17 +273,17 @@ module MCollective
 
         # Creates every listed directory locally, the root first, and
         # answers the local root per identity that got one.
-        def create_tree_directories(transfer, directories, destinations, source)
+        def create_tree_directories(directories, destinations, source)
           delivered = {}
           directories.each do |relative, group|
-            (group & transfer.active).each do |identity|
-              local = tree_path_for(transfer, identity, destinations, source, relative)
+            (group & @transfer.active).each do |identity|
+              local = tree_path_for(identity, destinations, source, relative)
               next if local.nil?
 
               begin
                 FileUtils.mkdir_p(local)
               rescue SystemCallError => e
-                transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
+                @transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
                   "#{local} could not be created for #{identity}: #{e.class}: #{e.message}"))
                 next
               end
@@ -289,37 +294,38 @@ module MCollective
         end
 
         # Fetches every listed file from the nodes that listed it.
-        def download_tree_files(transfer, files, source, destinations, staging)
+        def download_tree_files(files, source, destinations, staging)
           files.each do |relative, group|
             remote = File.join(source, relative)
-            group &= transfer.active
+            group &= @transfer.active
             next if group.empty?
 
-            expected = describe_sources(transfer, group, remote)
+            expected = describe_sources(group, remote)
             group &= expected.keys
             # The listing said file, so anything else now is the node's
             # problem, and only a file description carries the size and
             # digest below.
             changed = group.reject { |identity| expected[identity][:type] == 'file' }
-            transfer.fail(Outcome.failures(changed, :transfer_failed) { |identity| "#{remote} on #{identity} was listed as a file and is no longer one" })
+            @transfer.fail(Outcome.failures(changed, :transfer_failed) { |identity| "#{remote} on #{identity} was listed as a file and is no longer one" })
             group -= changed
-            next if group.empty?
+            landing = group.to_h { |identity| [identity, tree_path_for(identity, destinations, source, relative)] }.compact
+            next if landing.empty?
 
-            download_files(transfer, group, remote, expected, staging) { |identity| tree_path_for(transfer, identity, destinations, source, relative) }
+            download_files(remote, expected, staging, landing)
           end
         end
 
         # The local path for one entry of a downloaded tree, or nil once the
         # node has been failed because that path would leave its directory,
         # since the shape of the tree is the node's to choose.
-        def tree_path_for(transfer, identity, destinations, source, relative)
+        def tree_path_for(identity, destinations, source, relative)
           root = File.expand_path(destinations[identity])
           base = File.join(root, File.basename(source))
           path = relative.empty? ? base : File.join(base, relative)
           expanded = File.expand_path(path)
           return path if expanded == root || expanded.start_with?(root + File::SEPARATOR)
 
-          transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
+          @transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
             "The tree of #{source} from #{identity} would land outside #{destinations[identity]}"))
           nil
         end
@@ -342,19 +348,19 @@ module MCollective
 
         # Every entry of a remote directory per node, paging through list
         # with a cursor per node, since each node's pages are its own.
-        def list_remote(transfer, group, remote_dir)
+        def list_remote(group, remote_dir)
           listed = group.to_h { |identity| [identity, []] }
           offsets = group.to_h { |identity| [identity, 0] }
           pending = group.dup
           until pending.empty?
             pending.group_by { |identity| offsets[identity] }.each do |offset, page_identities|
-              response = @rpc.agent_call(page_identities, "file_transfer.list #{remote_dir}") { |client| client.list(path: remote_dir, offset: offset) }
-              transfer.fail(response[:errors])
-              pending -= response[:errors].keys
-              response[:responded].each do |identity, data|
+              response = @rpc.call(page_identities, "file_transfer.list #{remote_dir}") { |client| client.list(path: remote_dir, offset: offset) }
+              @transfer.fail(response.errors)
+              pending -= response.errors.keys
+              response.responded.each do |identity, data|
                 entries = listing_entries(data)
                 if entries.nil?
-                  transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
+                  @transfer.fail(identity => Outcome.failure(identity, :transfer_failed,
                     "file_transfer.list #{remote_dir} on #{identity} answered with an unusable listing"))
                   pending -= [identity]
                   next
@@ -366,7 +372,7 @@ module MCollective
               end
             end
           end
-          listed.slice(*transfer.active)
+          listed.slice(*@transfer.active)
         end
 
         # The entries of one list reply with symbol keys, or nil when the

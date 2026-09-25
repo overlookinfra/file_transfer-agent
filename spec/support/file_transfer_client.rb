@@ -64,13 +64,17 @@ class FakeRpcClient
 end
 
 # Stands in for a connection: every call is recorded and yields the one
-# fake RPC client, pointed at the identities of that call.
+# fake RPC client, pointed at the identities of that call. A measurement
+# is recorded among the calls too, under :measure, and answers what the
+# block given at construction makes of the arguments. The broker limit
+# is read the way the real connection reads it.
 class FakeConnection
   attr_reader :client, :wrapper, :calls
 
-  def initialize(wrapper)
+  def initialize(wrapper, &measurer)
     @client = FakeRpcClient.new
     @wrapper = wrapper
+    @measurer = measurer
     @calls = []
   end
 
@@ -82,6 +86,15 @@ class FakeConnection
 
   def nats_wrapper
     @wrapper
+  end
+
+  def max_payload
+    @wrapper.instance_variable_get(:@client).server_info[:max_payload]
+  end
+
+  def request_bytes(agent, action, args, identity)
+    @calls << { measure: action, agent: agent, identities: [identity] }
+    @measurer.call(args)
   end
 end
 
@@ -136,9 +149,10 @@ module FileTransferClientHelpers
 
   # The wire model of the fake: a signed request is an envelope plus the
   # base64 data, and the transport adds framing around its outer encoding.
-  # The measurement stub and the fake wrapper's publishing share it, as a
-  # measured and a sent request agree, and a context that overrides
-  # wire_size gives the sent request weight the measurement did not show.
+  # The connection's measurement and the fake wrapper's publishing share
+  # it, as a measured and a sent request agree, and a context that
+  # overrides wire_size gives the sent request weight the measurement did
+  # not show.
   def measured_size(args)
     framing + MCollective::Util::FileTransfer::Sizing.encoded_bytes(envelope + args[:data].bytesize)
   end
@@ -187,7 +201,7 @@ RSpec.shared_context 'with a file transfer client' do
 
   let(:max_payload) { 1_048_576 }
   let(:wrapper) { FakeNatsWrapper.new(max_payload) }
-  let(:connection) { FakeConnection.new(wrapper) }
+  let(:connection) { fake_connection(wrapper) }
   let(:rpc) { connection.client }
   let(:log) { FakeLogger.new }
   let(:chunk_size) { 16_384 }
@@ -203,23 +217,25 @@ RSpec.shared_context 'with a file transfer client' do
   let(:put_calls) { [] }
   let(:workdir) { Dir.mktmpdir('file_transfer-client') }
 
-  # The sizing measures requests through this, with the wire model the
-  # fake wrapper publishes with, so the fit and the guard agree, and the
-  # agent's DDL answers a 120 second timeout as the shipped one does. RPC
-  # results look their action up in the same DDL, and find no interface.
+  # The agent's DDL answers a 120 second timeout as the shipped one does.
+  # RPC results look their action up in the same DDL, and find no interface.
   before do
-    allow(MCollective::Util::FileTransfer::Connection).to receive(:request_bytes) do |_client, _action, args, _identity|
-      MCollective::Util::FileTransfer::Connection::Request.new(signed_bytes: envelope + args[:data].bytesize, wire_bytes: measured_size(args))
-    end
-    allow(MCollective::DDL).to receive(:new).with(MCollective::Util::FileTransfer::AGENT)
+    allow(MCollective::DDL).to receive(:new).with(MCollective::Util::FileTransfer::Rpc::AGENT)
                                             .and_return(instance_double(MCollective::DDL::AgentDDL, meta: { timeout: 120 }, action_interface: {}))
   end
 
   after { FileUtils.remove_entry_secure(workdir) }
 
-  # The calls that invoke an action, leaving out the ones that only borrow
-  # a client to measure a request.
+  # A connection over the wrapper whose measurements follow the wire
+  # model, for the shared context and for a context that swaps the wrapper.
+  def fake_connection(wrapper)
+    FakeConnection.new(wrapper) do |args|
+      MCollective::Util::FileTransfer::Connection::Request.new(signed_bytes: envelope + args[:data].bytesize, wire_bytes: measured_size(args))
+    end
+  end
+
+  # The calls that invoke an action, leaving out the measurements.
   def action_calls
-    connection.calls.select { |call| call[:publish_timeout] }
+    connection.calls.reject { |call| call[:measure] }
   end
 end

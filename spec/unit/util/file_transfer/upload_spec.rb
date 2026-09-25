@@ -52,12 +52,18 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(action_calls.map { |call| call[:publish_timeout] }.uniq).to eq([30])
   end
 
+  it 'waits the rpc timeout for every call but the final chunk, which waits the DDL timeout the node digests the file within' do
+    client.upload(source, destination, nodes)
+
+    expect(action_calls.map { |call| call[:timeout] }).to eq([30, 30, 30, 30, 120, 30])
+  end
+
   it 'measures an empty chunk request and the sized one, with a client for one node, after the session and before the chunks' do
     client.upload(source, destination, nodes)
 
-    measurement = { agent: 'file_transfer', identities: [node1], timeout: 30, publish_timeout: nil }
+    measurement = { measure: 'put', agent: 'file_transfer', identities: [node1] }
     expect(connection.calls[2..3]).to eq([measurement, measurement])
-    expect(connection.calls.map { |call| call[:publish_timeout] }).to eq([30, 30, nil, nil, 30, 30, 30, 30])
+    expect(connection.calls.map { |call| call[:measure] }).to eq([nil, nil, 'put', 'put', nil, nil, nil, nil])
   end
 
   it 'publishes each chunk to as many nodes at once as keep a batch under the memory bound at the broker limit' do
@@ -83,20 +89,6 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       client.upload(source, destination, nodes)
 
       expect(chunks.map { |call| call[:batch_size] }.uniq).to eq([3])
-    end
-  end
-
-  context 'with an upload batch size of one' do
-    let(:client_options) { { upload_batch_size: 1 } }
-
-    it 'derives the next chunk timeout from the time of one batch rather than the whole chunk' do
-      path = source
-      allow(Process).to receive(:clock_gettime).and_return(0, 12, 12, 24, 24, 36)
-
-      client.upload(path, destination, nodes)
-
-      expect(chunks.map { |call| call[:batch_size] }.uniq).to eq([1])
-      expect(action_calls.map { |call| call[:timeout] }).to eq([30, 30, 30, 18, 30, 30])
     end
   end
 
@@ -219,21 +211,9 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(outcomes.values.map(&:message)).to all(include('No space left on device'))
   end
 
-  context 'when the rpc timeout is below the chunk timeout floor' do
-    let(:client_options) { { rpc_timeout: 3 } }
-
-    it 'sends a multi chunk file with the rpc timeout as every timeout' do
-      outcomes = client.upload(source, destination, [node1])
-
-      expect(chunks.map { |call| call[:offset] }).to eq([0, 16_384, 32_768])
-      expect(connection.calls.map { |call| call[:timeout] }.uniq).to eq([3])
-      expect(outcomes[node1]).to be_success
-    end
-  end
-
   it 'still cleans up when the session was created and a later step raised' do
-    allow(MCollective::Util::FileTransfer::Upload).to receive(:new).and_wrap_original do |original, *args|
-      original.call(*args).tap { |upload| allow(upload).to receive(:upload_file).and_raise(RuntimeError, 'boom') }
+    allow(MCollective::Util::FileTransfer::FileSender).to receive(:new).and_wrap_original do |original, **args|
+      original.call(**args).tap { |sender| allow(sender).to receive(:send_file).and_raise(RuntimeError, 'boom') }
     end
     cleaned = false
     rpc.on(:cleanup) do |_args, names|
@@ -308,7 +288,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
   end
 
   context 'when the NATS wrapper is not reachable' do
-    let(:connection) { FakeConnection.new(nil) }
+    let(:connection) { fake_connection(nil) }
 
     # Nothing passes through the guard, as nothing would without a wrapper,
     # whatever an earlier example prepended onto the fake wrapper's class.
