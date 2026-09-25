@@ -145,7 +145,10 @@ module FileTransfer
       # it and must find the chunks before it already there.
       file = offset.zero? ? create_session_file(session, name) : open_session_file(session, name, offset)
       reply = begin
-        written = { 'bytes' => content.bytesize, 'size' => write_chunk(file, offset, content), 'sha256' => nil }
+        file.seek(offset)
+        file.write(content)
+        file.flush
+        written = { 'bytes' => content.bytesize, 'size' => file.stat.size, 'sha256' => nil }
         final ? written.merge('sha256' => verify_session_file(file, path, name, digest, mode, written)) : written
       ensure
         file.close
@@ -168,7 +171,11 @@ module FileTransfer
       max_bytes = integer_input('max_bytes')
       max_bytes = MAX_GET_BYTES if max_bytes > MAX_GET_BYTES
 
-      stat, content = open_regular_file(path) do |file|
+      # The open never blocks, so a FIFO planted at the path cannot hold
+      # the agent until the DDL timeout.
+      stat, content = File.open(path, File::RDONLY | File::NONBLOCK | File::BINARY) do |file|
+        raise Failure.new(ABORTED, "#{path} is not a regular file") unless file.stat.file?
+
         file.seek(offset)
         [file.stat, file.read(max_bytes) || '']
       end
@@ -350,14 +357,6 @@ module FileTransfer
       File.new(path, File::RDWR | NOFOLLOW | File::BINARY)
     end
 
-    # Writes the chunk at its offset and answers the size of the file after it.
-    def write_chunk(file, offset, content)
-      file.seek(offset)
-      file.write(content)
-      file.flush
-      file.stat.size
-    end
-
     # The last chunk verifies the whole file and sets its mode, and answers
     # the digest. The file then leaves the session for the destination, or
     # stays there for a caller that uses it in place and removes it with
@@ -377,17 +376,6 @@ module FileTransfer
       data.unpack1('m0')
     rescue ArgumentError => e
       raise Failure.new(INVALID_DATA, "The data is not valid base64 (#{e.class}: #{e.message})")
-    end
-
-    # Opens a path for reading and yields it, failing unless it is a regular
-    # file. The open never blocks, so a FIFO planted at the path cannot hold
-    # the agent until the DDL timeout.
-    def open_regular_file(path)
-      File.open(path, File::RDONLY | File::NONBLOCK | File::BINARY) do |file|
-        raise Failure.new(ABORTED, "#{path} is not a regular file") unless file.stat.file?
-
-        yield(file)
-      end
     end
 
     # Renames the verified file onto the destination, which replaces an

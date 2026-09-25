@@ -153,9 +153,24 @@ module MCollective
         end
 
         # The data of every identity that answered with status 0 and a data
-        # hash, and an Outcome for every other identity.
+        # hash, and an Outcome for every other identity. The first reply of
+        # an identity counts, from the identities addressed only.
         def sort_replies(results, identities, context)
-          by_sender = index_by_sender(results, identities, context)
+          expected = identities.to_set
+          by_sender = {}
+          results.each do |result|
+            sender = result[:sender]
+            if sender.nil?
+              @logger.warn("Discarding #{context} response with nil sender")
+            elsif !expected.include?(sender)
+              @logger.warn("Discarding #{context} response from unexpected sender #{sender.inspect}")
+            elsif by_sender.key?(sender)
+              @logger.warn("Ignoring duplicate #{context} response from #{sender}")
+            else
+              by_sender[sender] = result
+            end
+          end
+
           responded = {}
           errors = {}
           identities.each do |identity|
@@ -174,25 +189,6 @@ module MCollective
             end
           end
           [responded, errors]
-        end
-
-        # The first reply per identity, from the identities addressed only.
-        def index_by_sender(results, identities, context)
-          expected = identities.to_set
-          by_sender = {}
-          results.each do |result|
-            sender = result[:sender]
-            if sender.nil?
-              @logger.warn("Discarding #{context} response with nil sender")
-            elsif !expected.include?(sender)
-              @logger.warn("Discarding #{context} response from unexpected sender #{sender.inspect}")
-            elsif by_sender.key?(sender)
-              @logger.warn("Ignoring duplicate #{context} response from #{sender}")
-            else
-              by_sender[sender] = result
-            end
-          end
-          by_sender
         end
       end
     end

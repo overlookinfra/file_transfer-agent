@@ -142,18 +142,13 @@ module MCollective
               pending -= fetch_round(pending, remote, offset, max_bytes, handles)
               pending &= @transfer.active
               offset += max_bytes
-              @transfer.fail(overrun_failures(pending, remote, offset, expected))
+              over = pending.select { |identity| offset >= expected[identity][:size] }
+              @transfer.fail(Outcome.failures(over, :transfer_failed) { |identity| "#{remote} on #{identity} kept sending past the #{expected[identity][:size]} bytes stat reported" })
             end
           ensure
             handles.each_value(&:close)
           end
           verify_downloads(group, remote, handles, expected)
-        end
-
-        # Nodes still sending once the offset passes the size their stat reported.
-        def overrun_failures(pending, remote, offset, expected)
-          over = pending.select { |identity| offset >= expected[identity][:size] }
-          Outcome.failures(over, :transfer_failed) { |identity| "#{remote} on #{identity} kept sending past the #{expected[identity][:size]} bytes stat reported" }
         end
 
         # Answers the identities that reached eof.
@@ -169,13 +164,20 @@ module MCollective
               next unless asked.include?(identity) && result[:statuscode].zero?
 
               begin
-                chunk = decode_reply(result[:data], max_bytes)
+                data = result[:data]
+                raise 'the reply carries no data' unless data.is_a?(Hash)
+
+                chunk = data[:data].to_s.unpack1('m0')
+                # The node decides what the reply says, so more content
+                # than the request asked for is refused.
+                raise "the reply carries #{chunk.bytesize} bytes, more than the #{max_bytes} requested" if chunk.bytesize > max_bytes
+
                 handles[identity].seek(offset)
                 handles[identity].write(chunk)
-                finished << identity if result[:data][:eof]
+                finished << identity if data[:eof]
                 # The chunk is on disk, so the reply need not hold it for
                 # the rest of the round.
-                result[:data].delete(:data)
+                data.delete(:data)
               rescue StandardError => e
                 @logger.debug(e.backtrace.join("\n")) if e.backtrace
                 write_errors[identity] = Outcome.failure(identity, :transfer_failed,
@@ -187,17 +189,6 @@ module MCollective
           @transfer.fail(response.errors)
           @transfer.fail(write_errors)
           finished - write_errors.keys
-        end
-
-        # The content of one get reply, refused when it carries more than
-        # the request asked for, since the node decides what the reply says.
-        def decode_reply(data, max_bytes)
-          raise 'the reply carries no data' unless data.is_a?(Hash)
-
-          chunk = data[:data].to_s.unpack1('m0')
-          raise "the reply carries #{chunk.bytesize} bytes, more than the #{max_bytes} requested" if chunk.bytesize > max_bytes
-
-          chunk
         end
 
         def verify_downloads(group, remote, handles, expected)

@@ -68,7 +68,13 @@ module MCollective
           exit 1
         end
 
-        outcomes = transfer(Util::FileTransfer::Client.new(**client_settings), identities.sort)
+        client = Util::FileTransfer::Client.new(
+          connection: Util::FileTransfer::Connection.new(options),
+          rpc_timeout: options[:timeout],
+          cleanup: !configuration[:keep_session],
+          **configuration.slice(:chunk_size, :upload_batch_size, :download_batch_size).compact
+        )
+        outcomes = transfer(client, identities.sort)
         report(outcomes)
         exit(exit_code(outcomes))
       end
@@ -81,11 +87,6 @@ module MCollective
         return 3 if outcomes.values.all? { |outcome| outcome.kind == :no_response }
 
         2
-      end
-
-      def client_settings
-        { connection: Util::FileTransfer::Connection.new(options), rpc_timeout: options[:timeout], cleanup: !configuration[:keep_session],
-          **configuration.slice(:chunk_size, :upload_batch_size, :download_batch_size).compact }
       end
 
       def transfer(client, identities)
