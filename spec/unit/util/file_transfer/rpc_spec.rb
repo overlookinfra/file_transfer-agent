@@ -136,18 +136,15 @@ RSpec.describe MCollective::Util::FileTransfer::Rpc do
   end
 
   it 'holds every message of a call under the broker limit and lifts the limit after' do
-    seen = nil
     stub_stat do |_args, names|
-      seen = MCollective::Util::FileTransfer::PublishGuard.limit
-      wrapper.publish('subject', 'x' * 500)
+      wrapper.publish('subject', 'x' * max_payload)
       results_for(names, { exists: true })
     end
 
     stat_call
+    wrapper.publish('subject', 'x' * (max_payload + 1))
 
-    expect(seen).to eq(max_payload)
-    expect(MCollective::Util::FileTransfer::PublishGuard.limit).to be_nil
-    expect(wrapper.published).to eq([500])
+    expect(wrapper.published).to eq([max_payload, max_payload + 1])
   end
 
   context 'with a message over the broker limit' do
@@ -162,7 +159,6 @@ RSpec.describe MCollective::Util::FileTransfer::Rpc do
       response = stat_call
 
       expect(wrapper.published).to be_empty
-      expect(MCollective::Util::FileTransfer::PublishGuard.limit).to be_nil
       expect(response.errors.values.map(&:kind).uniq).to eq([:payload_too_large])
       expect(response.errors[node1].message).to include("file_transfer.stat /x on #{node1} was not sent", '1500 byte message', 'Lower the chunk size')
     end

@@ -51,36 +51,66 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
     expect(options).to eq(timeout: 5, collective: 'mcollective', filter: {})
   end
 
-  it 'answers the connector plugin connection as the NATS wrapper' do
-    wrapper = Object.new
-    allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(instance_double(MCollective::Connector::Nats, connection: wrapper))
+  describe '#max_payload' do
+    it 'reads the payload limit off the wrapper client\'s server info' do
+      wrapper = FakeNatsWrapper.new(4_194_304)
+      allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(instance_double(MCollective::Connector::Nats, connection: wrapper))
 
-    expect(connection.nats_wrapper).to be(wrapper)
+      expect(connection.max_payload).to eq(4_194_304)
+    end
+
+    it 'raises when the connector has no wrapper' do
+      allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(Object.new)
+
+      expect { connection.max_payload }.to raise_error(NoMethodError)
+    end
+
+    it 'raises when no connector plugin is loaded' do
+      allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_raise('No plugin connector_plugin defined')
+
+      expect { connection.max_payload }.to raise_error(RuntimeError, 'No plugin connector_plugin defined')
+    end
   end
 
-  it 'raises when no connector plugin is loaded' do
-    allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_raise('No plugin connector_plugin defined')
+  describe '#guard' do
+    let(:wrapper) { FakeNatsWrapper.new(4_194_304) }
 
-    expect { connection.nats_wrapper }.to raise_error(RuntimeError, 'No plugin connector_plugin defined')
-  end
+    before do
+      allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(instance_double(MCollective::Connector::Nats, connection: wrapper))
+    end
 
-  it 'answers nil for a connector without a connection' do
-    allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(Object.new)
+    it 'refuses a message over the limit before it is sent, naming both sizes' do
+      expect { connection.guard(100) { wrapper.publish('subject', 'x' * 130) } }
+        .to raise_error(MCollective::Util::FileTransfer::PayloadTooLarge, "A 130 byte message exceeds the broker's 100 byte payload limit")
+      expect(wrapper.published).to be_empty
+    end
 
-    expect(connection.nats_wrapper).to be_nil
-  end
+    it 'sends a message at the limit and answers what the block answers' do
+      answer = connection.guard(100) do
+        wrapper.publish('subject', 'x' * 100)
+        :done
+      end
 
-  it 'reads the payload limit off the wrapper client\'s server info' do
-    wrapper = FakeNatsWrapper.new(4_194_304)
-    allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(instance_double(MCollective::Connector::Nats, connection: wrapper))
+      expect(wrapper.published).to eq([100])
+      expect(answer).to eq(:done)
+    end
 
-    expect(connection.max_payload).to eq(4_194_304)
-  end
+    it 'lifts the limit after the block, also when the block raised' do
+      connection.guard(100) { nil }
+      wrapper.publish('subject', 'x' * 130)
+      expect { connection.guard(100) { raise 'broker down' } }.to raise_error('broker down')
+      wrapper.publish('subject', 'x' * 140)
 
-  it 'raises for the payload limit when the connector has no wrapper' do
-    allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(Object.new)
+      expect(wrapper.published).to eq([130, 140])
+    end
 
-    expect { connection.max_payload }.to raise_error(NoMethodError)
+    it 'changes the wrapper class on the first call only' do
+      connection.guard(100) { nil }
+      guarded = wrapper.class.ancestors
+      connection.guard(100) { nil }
+
+      expect(wrapper.class.ancestors).to eq(guarded)
+    end
   end
 
   it 'runs every call under the mutex it is given, so a caller can share its own lock' do

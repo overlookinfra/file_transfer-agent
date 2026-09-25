@@ -27,8 +27,8 @@ module MCollective
 
         # See Client#upload.
         def run(source, destination)
-          @logger.debug("Upload chunks go to #{@rpc.upload_batch_size} nodes per request")
           landing = landing_paths(source, destination)
+          @logger.debug("Upload chunks go to #{@rpc.upload_batch_size} nodes per request")
           Session.with(transfer: @transfer, rpc: @rpc, logger: @logger, cleanup: @cleanup, sender: @sender) do |session|
             if File.directory?(source)
               upload_tree(session.id, source, landing)

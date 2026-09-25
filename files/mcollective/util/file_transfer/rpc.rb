@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 require 'mcollective'
+require_relative 'connection'
 require_relative 'outcome'
-require_relative 'publish_guard'
 
 module MCollective
   module Util
@@ -64,7 +64,9 @@ module MCollective
         end
 
         # The broker's advertised payload limit, read once, or the default
-        # with a warning naming why it could not be read.
+        # with a warning naming why it could not be read. The first read is
+        # inside the first call, from guard, after that call's client has
+        # connected, since the connector has no server info before then.
         def max_payload
           @max_payload ||= read_max_payload
         end
@@ -111,7 +113,7 @@ module MCollective
               client.batch_size = batch_size
               client.batch_sleep_time = 0
             end
-            guarded { yield client }
+            @connection.guard(max_payload) { yield client }
           end
           responded, errors = sort_replies(results, identities, context)
           Response.new(responded: responded, errors: errors)
@@ -127,15 +129,6 @@ module MCollective
 
         private
 
-        # Runs the block with the guard set to the broker's limit.
-        def guarded
-          PublishGuard.install(@connection.nats_wrapper.class)
-          PublishGuard.limit = max_payload
-          yield
-        ensure
-          PublishGuard.limit = nil
-        end
-
         # The timeout the agent's DDL declares, read from the DDL the client
         # loads, since the node enforces the value in its own copy.
         def ddl_timeout
@@ -144,9 +137,10 @@ module MCollective
 
         def read_max_payload
           limit = @connection.max_payload
-          return limit if limit.is_a?(Integer) && limit.positive?
+          return unknown_max_payload("the server info says #{limit.inspect}") unless limit.is_a?(Integer) && limit.positive?
 
-          unknown_max_payload("the server info says #{limit.inspect}")
+          @logger.debug("The broker limits a message to #{limit} bytes")
+          limit
         rescue StandardError => e
           unknown_max_payload("#{e.class}: #{e.message}")
         end

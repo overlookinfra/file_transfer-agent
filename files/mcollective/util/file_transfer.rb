@@ -86,11 +86,10 @@ module MCollective
 
         private
 
-        # A transfer to the identities, logged with the limit and the chunk
-        # it runs under.
+        # A transfer to the identities, logged with the chunk it runs under.
         def start_transfer(identities)
           transfer = Transfer.new(identities)
-          @logger.debug("File transfer with #{transfer.count} has a #{@rpc.max_payload} byte broker limit and chunks of #{@chunk} bytes")
+          @logger.debug("File transfer with #{transfer.count} in chunks of #{@chunk} bytes")
           transfer
         end
       end

@@ -63,13 +63,15 @@ class FakeRpcClient
   end
 end
 
-# Stands in for a connection: every call is recorded and yields the one
-# fake RPC client, pointed at the identities of that call. The broker
-# limit is read the way the real connection reads it.
-class FakeConnection
-  attr_reader :client, :wrapper, :calls
+# The real connection with its client building replaced. Every call is
+# recorded and yields the one fake RPC client, pointed at the identities
+# of that call, and the wrapper is the fake one, so the guard and the
+# limit read are the real code over it.
+class FakeConnection < MCollective::Util::FileTransfer::Connection
+  attr_reader :client, :calls
 
   def initialize(wrapper)
+    super({})
     @client = FakeRpcClient.new
     @wrapper = wrapper
     @calls = []
@@ -81,12 +83,10 @@ class FakeConnection
     yield(@client)
   end
 
+  private
+
   def nats_wrapper
     @wrapper
-  end
-
-  def max_payload
-    @wrapper.instance_variable_get(:@client).server_info[:max_payload]
   end
 end
 

@@ -17,7 +17,6 @@ mcollective_agent_file_transfer::client_files:
 - util/file_transfer/download.rb
 - util/file_transfer/file_sender.rb
 - util/file_transfer/outcome.rb
-- util/file_transfer/publish_guard.rb
 - util/file_transfer/rpc.rb
 - util/file_transfer/session.rb
 - util/file_transfer/transfer.rb
