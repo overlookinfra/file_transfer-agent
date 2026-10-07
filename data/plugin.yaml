@@ -1,0 +1,8 @@
+mcollective_agent_file_transfer::config_name: file_transfer
+mcollective_agent_file_transfer::common_files: []
+mcollective_agent_file_transfer::common_directories: []
+mcollective_agent_file_transfer::server_files: []
+mcollective_agent_file_transfer::server_directories: []
+mcollective_agent_file_transfer::executable_files: []
+mcollective_agent_file_transfer::client_files: []
+mcollective_agent_file_transfer::client_directories: []
