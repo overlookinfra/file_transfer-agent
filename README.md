@@ -10,6 +10,27 @@ Every chunk is a signed, base64-encoded RPC round trip, so transfers through
 Choria are far less efficient than a download from a file server. The agent
 is meant for smaller files. Gigabytes belong on a file server.
 
+## Actions
+
+| Action | Purpose | Inputs | Outputs |
+|--------|---------|--------|---------|
+| `put` | Write one chunk of a file under a temporary name beside its destination, verify and rename on the last | `destination`, `token`, `offset`, `data`, `final`, `sha256`, `mode` | `bytes`, `size`, `sha256` |
+| `abort` | Remove the temporary file of an upload that will not finish | `destination`, `token` | `removed` |
+| `get` | Read one chunk of a file | `path`, `offset`, `max_bytes` | `data`, `bytes`, `size` |
+| `stat` | Describe a path | `path`, `checksum` | `exists`, `type`, `symlink`, `size`, `mode`, `mtime`, `sha256` |
+| `list` | List every entry under a directory | `path`, `max_bytes` | `entries` |
+| `mkdir` | Create a directory and missing parents | `path`, `mode` | none |
+
+Chunk `data` is base64 encoded in both directions and never compressed.
+Compress a file before sending it when its size matters.
+
+`files/mcollective/agent/file_transfer.json` is the DDL the Choria server
+reads. The Ruby DDL next to it is generated from the JSON with
+
+```
+choria plugin generate ddl file_transfer.json file_transfer.ddl --convert
+```
+
 ## Installation
 
 The module is a Puppet module that depends on `choria/mcollective`. Put it
