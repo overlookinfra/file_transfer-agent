@@ -1,0 +1,464 @@
+#!/opt/puppetlabs/puppet/bin/ruby
+# frozen_string_literal: true
+
+# Choria external agent for chunked file transfer with SHA-256 verification.
+#
+# The Choria server runs one process per request. It names the request and
+# reply files in the environment, validates the inputs against the JSON
+# DDL before starting the process, and logs stdout at INFO and stderr at
+# ERROR.
+#
+# A file arrives chunk by chunk under a temporary name beside its
+# destination, .file_transfer- and a token the caller chose, until the
+# final chunk verifies it and renames it into place. The agent reads no
+# settings and keeps nothing between requests.
+
+require 'digest'
+require 'fileutils'
+require 'find'
+require 'json'
+
+module FileTransfer
+  ACTIVATION_PROTOCOL = 'io.choria.mcorpc.external.v1.activation_request'
+
+  TEMP_PREFIX = '.file_transfer-'
+  TOKEN_REGEX = /\A[0-9a-f]{16}\z/
+
+  # The most one reply may carry, 48 MiB of file content for a get or of
+  # listing for a list, which is 64 MiB once base64 encoded. That is the
+  # largest payload NATS documents and the maxlength the DDL gives put's
+  # data, so both directions share one ceiling. A caller sizes each
+  # request to its broker's real limit, far below this. The cap exists
+  # because the Choria server reads every reply file whole before
+  # publishing it, so a request for more than any broker could carry
+  # would only cost the node and the server memory for a reply that can
+  # never be delivered.
+  MAX_REPLY_BYTES = 50_331_648
+  DIGEST_READ_BYTES = 65_536
+
+  # Ruby defines File::NOFOLLOW only where open(2) has O_NOFOLLOW, which
+  # Windows does not, so there the flag is absent and every open follows
+  # links, as the rest of Windows does.
+  NOFOLLOW = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0
+  # Windows names have rules of their own, since a device name, a colon
+  # or a trailing dot or space in the last component of a destination
+  # would land the file somewhere other than the name asked for.
+  WINDOWS = Gem.win_platform?
+  # Ruby's Windows port defines File::NONBLOCK as 1, which is the C
+  # runtime's value for a write-only open, so with the flag a read would
+  # open the file for writing there. Windows has no named pipe in the
+  # filesystem that the flag guards against, so the flag is left out.
+  NONBLOCK = WINDOWS ? 0 : File::NONBLOCK
+  WINDOWS_RESERVED_NAMES = /\A(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?\z/i
+
+  OK = 0
+  ABORTED = 1
+  UNKNOWN_ACTION = 2
+  MISSING_DATA = 3
+  INVALID_DATA = 4
+  UNKNOWN_ERROR = 5
+
+  # Plain words for the kinds of entry that a delivered file does not
+  # replace, by the name that File::Stat#ftype gives them.
+  ENTRY_KINDS = { 'fifo' => 'named pipe', 'characterSpecial' => 'character device', 'blockSpecial' => 'block device' }.freeze
+
+  # A reply with a non-zero status code.
+  class Failure < StandardError
+    attr_reader :statuscode, :data
+
+    def initialize(statuscode, message, data = {})
+      super(message)
+      @statuscode = statuscode
+      @data = data
+    end
+  end
+
+  # One request. Every action returns the reply data or raises.
+  class Agent
+    ACTIONS = ['put', 'abort', 'get', 'stat', 'list', 'mkdir'].freeze
+
+    # @param request [Hash] The parsed request
+    def initialize(request)
+      @action = request['action']
+      @data = request.fetch('data')
+    end
+
+    # A SystemCallError is the operating system refusing something an action
+    # asked of the filesystem, such as a parent that does not exist, a
+    # permission, a full or read-only filesystem, or a name too long. Those
+    # are the caller's problem to act on, so they answer Aborted with the
+    # error's class and the system's message. Any other exception is a bug
+    # in the agent and answers UnknownError with its class and message,
+    # logged for the server with its backtrace.
+    #
+    # @return [Hash] The reply with its status code, status message and data
+    def reply
+      raise Failure.new(UNKNOWN_ACTION, "Unknown action #{@action.inspect}") unless ACTIONS.include?(@action)
+
+      { 'statuscode' => OK, 'statusmsg' => 'OK', 'data' => method(@action).call }
+    rescue Failure => e
+      { 'statuscode' => e.statuscode, 'statusmsg' => e.message.scrub, 'data' => e.data }
+    rescue SystemCallError => e
+      { 'statuscode' => ABORTED, 'statusmsg' => "#{e.class}: #{e.message}".scrub, 'data' => {} }
+    rescue StandardError => e
+      warn "The file_transfer #{@action} action raised #{e.class}: #{e.message}\n#{e.backtrace.join("\n")}"
+      { 'statuscode' => UNKNOWN_ERROR, 'statusmsg' => "#{e.class}: #{e.message}".scrub, 'data' => {} }
+    end
+
+    private
+
+    # Writes one chunk of a file under its temporary name beside the
+    # destination, and on the final chunk verifies the file and renames
+    # it into place.
+    #
+    # @return [Hash] bytes, size and sha256, as the DDL declares
+    def put
+      destination = destination_input
+      path = temp_path(destination, token_input)
+      offset = integer_input('offset')
+      final = @data.fetch('final', false)
+      digest = @data['sha256']
+      mode = mode_input
+      raise Failure.new(MISSING_DATA, 'The sha256 input is required with final') if final && digest.nil?
+
+      content = decode_chunk(@data.fetch('data'))
+      file = open_temp_file(path, offset)
+      begin
+        raise Failure.new(INVALID_DATA, "#{path} is #{file.size} bytes, so a chunk before offset #{offset} was lost") if file.size < offset
+
+        file.seek(offset)
+        file.write(content)
+        file.flush
+        written = { 'bytes' => content.bytesize, 'size' => file.size, 'sha256' => nil }
+        written['sha256'] = verify_file(file, destination, digest, mode) if final
+        file.close
+        File.rename(path, destination) if final
+      rescue StandardError
+        # The library drops a node at its first failure and resends no
+        # chunk, so the partial file has no future. The close comes first,
+        # since Windows refuses to remove an open file.
+        file.close
+        FileUtils.rm_f(path)
+        raise
+      end
+      written
+    end
+
+    # Removes the temporary file of an upload that will not finish.
+    #
+    # @return [Hash] removed, as the DDL declares
+    def abort
+      path = temp_path(destination_input, token_input)
+      found = begin
+        File.lstat(path)
+      rescue Errno::ENOENT
+        nil
+      end
+      File.unlink(path) if found
+      { 'removed' => !found.nil? }
+    end
+
+    # Reads one chunk of a file.
+    #
+    # @return [Hash] data, bytes and size, as the DDL declares
+    def get
+      path = path_input('path')
+      offset = integer_input('offset')
+      max_bytes = [integer_input('max_bytes'), MAX_REPLY_BYTES].min
+
+      # Opening a named pipe blocks until something writes to it, which would
+      # hang the agent until the server kills it, so the open does not block
+      # and the stat below refuses anything but a regular file.
+      file_stat, content = File.open(path, File::RDONLY | NONBLOCK | File::BINARY) do |file|
+        raise Failure.new(ABORTED, "#{path} is not a regular file") unless file.stat.file?
+
+        file.seek(offset)
+        [file.stat, file.read(max_bytes) || '']
+      end
+
+      { 'data' => [content].pack('m0'), 'bytes' => content.bytesize, 'size' => file_stat.size }
+    end
+
+    # Describes what is at a path, with its digest when asked for.
+    #
+    # @return [Hash] exists, type, symlink, size, mode, mtime and sha256, as the DDL declares
+    def stat
+      path = path_input('path')
+      checksum = @data.fetch('checksum', false)
+      description = describe(path)
+      if description.nil?
+        return { 'exists' => false, 'type' => nil, 'symlink' => nil, 'size' => nil, 'mode' => nil, 'mtime' => nil,
+                 'sha256' => nil }
+      end
+
+      return description.merge('exists' => true, 'sha256' => nil) unless checksum && description['type'] == 'file'
+
+      # The size reported is the number of bytes digested, which for a file
+      # under /proc is what a read gives rather than the zero its stat says,
+      # so a download that reads up to that size verifies. Opened as get
+      # opens, so a path swapped for a named pipe since describe cannot
+      # block the agent.
+      size, sha256 = File.open(path, File::RDONLY | NONBLOCK | File::BINARY) do |file|
+        raise Failure.new(ABORTED, "#{path} is not a regular file") unless file.stat.file?
+
+        digest_io(file)
+      end
+      description.merge('exists' => true, 'size' => size, 'sha256' => sha256)
+    end
+
+    # Lists every entry under a directory, each with its path relative to
+    # it, parents before their contents. The walk never follows a link, so
+    # a link to a directory is listed and its contents are not, and no
+    # link can make the walk loop. The directory itself is resolved first,
+    # so a link to a directory can still be listed. A listing that outgrows
+    # max_bytes, which the caller sizes to what one reply may carry, is
+    # refused.
+    #
+    # @return [Hash] entries, as the DDL declares
+    def list
+      path = path_input('path')
+      max_bytes = [integer_input('max_bytes'), MAX_REPLY_BYTES].min
+      root = File.realpath(path)
+      raise Errno::ENOTDIR, path unless File.directory?(root)
+
+      entries = []
+      bytes = 0
+      prefix = root.end_with?('/') ? root : "#{root}/"
+      Find.find(root, ignore_error: false) do |entry|
+        next if entry == root
+
+        name = entry.delete_prefix(prefix)
+        # A reply cannot carry such a name, and a caller could not reach the
+        # entry by a repaired one, so the listing fails and says why.
+        unless name.valid_encoding?
+          raise Failure.new(ABORTED, "#{path} holds an entry whose name is not valid UTF-8, #{name.scrub.inspect}, so it cannot be listed")
+        end
+
+        description = describe(entry)
+        # Find stats the entry itself once this block returns, so an entry
+        # that vanished in between is pruned rather than skipped.
+        Find.prune if description.nil?
+
+        entries << description.merge('name' => name)
+        bytes += JSON.generate(entries.last).bytesize
+        next if bytes <= max_bytes
+
+        raise Failure.new(ABORTED, "The listing of #{path} does not fit in #{max_bytes} bytes at #{entries.length} entries, so the directory " \
+                                   'is not listed; take its subdirectories one at a time')
+      end
+      { 'entries' => entries }
+    end
+
+    # Creates a directory and its parents.
+    #
+    # @return [Hash] Empty, as the DDL declares
+    def mkdir
+      FileUtils.mkdir_p(path_input('path'), mode: mode_input)
+      {}
+    end
+
+    # The temporary file
+
+    # @param destination [String] The validated destination
+    # @param token [String] The validated token
+    # @return [String] The temporary file beside the destination
+    def temp_path(destination, token)
+      File.join(File.dirname(destination), "#{TEMP_PREFIX}#{token}")
+    end
+
+    # The first chunk creates the file, and only a new one, so nothing
+    # standing at the name is adopted. Every later chunk opens the file the
+    # chunks before it left, without following a link planted at its name
+    # in the meantime.
+    #
+    # @param path [String] The temporary file
+    # @param offset [Integer] The offset the chunk starts at
+    # @return [File] The file, open for writing
+    # @raise [Failure] When a later chunk finds no file
+    def open_temp_file(path, offset)
+      return File.new(path, File::RDWR | File::CREAT | File::EXCL | File::BINARY, 0o600) if offset.zero?
+
+      begin
+        File.new(path, File::RDWR | NOFOLLOW | File::BINARY)
+      rescue Errno::ENOENT => e
+        raise Failure.new(INVALID_DATA, "#{path} does not exist, so an earlier chunk was lost (#{e.class}: #{e.message})")
+      end
+    end
+
+    # The digest reads the open handle, so it covers the bytes that were
+    # written through it and no other file at the path.
+    #
+    # @param file [File] The open temporary file
+    # @param destination [String] For messages
+    # @param digest [String] The sha256 the caller sent
+    # @param mode [Integer, nil] The mode to apply
+    # @return [String] The digest computed
+    # @raise [Failure] When the digests differ
+    def verify_file(file, destination, digest, mode)
+      file.rewind
+      _size, actual = digest_io(file)
+      raise Failure.new(ABORTED, "Checksum mismatch for #{destination}: expected #{digest}, got #{actual}", 'sha256' => actual) unless actual == digest
+
+      file.chmod(mode) if mode
+      actual
+    end
+
+    # Chunk data travels base64 encoded in both directions.
+    #
+    # @param data [String] Base64
+    # @return [String] The bytes
+    # @raise [Failure] When the data is not valid base64
+    def decode_chunk(data)
+      data.unpack1('m0')
+    rescue ArgumentError => e
+      raise Failure.new(INVALID_DATA, "The data is not valid base64 (#{e.class}: #{e.message})")
+    end
+
+    # Paths
+
+    # Returns what is at the path, or nil when nothing is there. A symbolic
+    # link is described by what it points at, so a caller sees a linked
+    # directory as a directory and can decide not to walk into it. A
+    # dangling link is described by itself, as type other.
+    #
+    # @param path [String]
+    # @return [Hash, nil] type, symlink, size, mode and mtime
+    def describe(path)
+      lstat = File.lstat(path)
+      target_stat = begin
+        File.stat(path)
+      rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP
+        lstat
+      end
+      type = ['file', 'directory'].include?(target_stat.ftype) ? target_stat.ftype : 'other'
+      { 'type' => type, 'symlink' => lstat.symlink?, 'size' => target_stat.size,
+        'mode' => format('%04o', target_stat.mode & 0o7777), 'mtime' => target_stat.mtime.to_i }
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      nil
+    end
+
+    # Streams an open file from its current position through SHA-256.
+    #
+    # @param file [File]
+    # @return [Array(Integer, String)] The bytes digested and the hex digest
+    def digest_io(file)
+      digest = Digest::SHA256.new
+      size = 0
+      while (chunk = file.read(DIGEST_READ_BYTES))
+        digest.update(chunk)
+        size += chunk.bytesize
+      end
+      [size, digest.hexdigest]
+    end
+
+    # Inputs
+
+    # The server validates every input against the DDL before the agent
+    # starts, so the checks here are the ones the DDL cannot express, plus
+    # the inputs that become paths, which are checked again on purpose.
+
+    # An integer is not bounded below by the DDL.
+    #
+    # @param key [String] The input's name
+    # @return [Integer]
+    # @raise [Failure] For a negative value
+    def integer_input(key)
+      value = @data.fetch(key)
+      raise Failure.new(INVALID_DATA, "The #{key} input must be at least 0") if value.negative?
+
+      value
+    end
+
+    # @param key [String] The input's name
+    # @return [String] The expanded absolute path
+    # @raise [Failure] For anything but an absolute path
+    def path_input(key)
+      value = @data.fetch(key)
+      unless value.valid_encoding? && !value.include?("\0") && File.absolute_path?(value)
+        raise Failure.new(INVALID_DATA, "The #{key} input must be an absolute path")
+      end
+
+      File.expand_path(value)
+    end
+
+    # The DDL regex refuses anything else and the server checks it before
+    # the agent starts. The token becomes part of a name the agent creates
+    # and removes, so it is checked again rather than trust that.
+    #
+    # @return [String] The token
+    # @raise [Failure] For anything but 16 lowercase hex characters
+    def token_input
+      token = @data.fetch('token')
+      raise Failure.new(INVALID_DATA, 'The token must be 16 lowercase hex characters') unless token.match?(TOKEN_REGEX)
+
+      token
+    end
+
+    # A trailing separator names a directory, which a rename cannot
+    # replace with a file. On Windows the last component may not carry a
+    # colon, a reserved device name or a trailing dot or space, since the
+    # create and the rename would land the file somewhere other than
+    # asked; the rule reads the raw input, since Windows path expansion
+    # may drop a trailing dot or space. The rename at the end replaces
+    # whatever stands at the destination without following a link, so a
+    # named pipe or a device standing there itself is refused rather than
+    # turned into a regular file, while a link to one is replaced like any
+    # link.
+    #
+    # @return [String] The expanded destination
+    # @raise [Failure]
+    def destination_input
+      destination = path_input('destination')
+      given = @data.fetch('destination')
+      if given.end_with?(*[File::SEPARATOR, File::ALT_SEPARATOR].compact)
+        raise Failure.new(INVALID_DATA, 'The destination input must name a file, so it cannot end in a separator')
+      end
+
+      last = given.split(%r{[/\\]}).last.to_s
+      if WINDOWS && (last.include?(':') || last.match?(WINDOWS_RESERVED_NAMES) || last.end_with?('.', ' '))
+        raise Failure.new(INVALID_DATA, 'The last component of the destination must not carry a colon, a device name, or a trailing dot ' \
+                                        'or space on Windows')
+      end
+
+      standing = begin
+        File.lstat(destination)
+      rescue Errno::ENOENT, Errno::ENOTDIR
+        nil
+      end
+      if standing && !standing.file? && !standing.directory? && !standing.symlink?
+        kind = ENTRY_KINDS.fetch(standing.ftype, standing.ftype)
+        raise Failure.new(INVALID_DATA, "The destination #{destination} is a #{kind}, so the file is not put there")
+      end
+
+      destination
+    end
+
+    # The mode as the octal digits the DDL validated, or nil without one.
+    #
+    # @return [Integer, nil]
+    def mode_input
+      @data['mode']&.to_i(8)
+    end
+  end
+
+  # Reads the request the server named, runs it, and writes the reply.
+  #
+  # @param env [Hash{String => String}] The process environment
+  def self.run(env)
+    output = if env['CHORIA_EXTERNAL_PROTOCOL'] == ACTIVATION_PROTOCOL
+               { 'activate' => true }
+             else
+               # The server starts the agent without a locale, so a plain read
+               # would tag the request US-ASCII and fail on a non-ASCII path.
+               request = JSON.parse(File.read(env.fetch('CHORIA_EXTERNAL_REQUEST'), encoding: Encoding::UTF_8))
+               Agent.new(request).reply
+             end
+    File.write(env.fetch('CHORIA_EXTERNAL_REPLY'), JSON.generate(output))
+  rescue StandardError => e
+    warn "The file_transfer agent raised #{e.class}: #{e.message}\n#{e.backtrace.join("\n")}"
+    File.write(env.fetch('CHORIA_EXTERNAL_REPLY'),
+      JSON.generate('statuscode' => UNKNOWN_ERROR, 'statusmsg' => "#{e.class}: #{e.message}".scrub, 'data' => {}))
+  end
+end
+
+FileTransfer.run(ENV) if __FILE__ == $PROGRAM_NAME
