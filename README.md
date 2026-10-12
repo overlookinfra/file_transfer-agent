@@ -53,6 +53,152 @@ reads. The Ruby DDL next to it is generated from the JSON with
 choria plugin generate ddl file_transfer.json file_transfer.ddl --convert
 ```
 
+## Client library
+
+The module also ships the client side of the protocol, the MCollective util
+plugin `MCollective::Util::FileTransfer`, which `mcollective_agent_file_transfer`
+installs on a client host with `client => true`. It sends files in chunks
+sized to the broker's message limit, verifies every file with SHA-256,
+assembles each file under a temporary name beside its destination, and
+returns an outcome per node rather than raising for one node's failure.
+OpenBolt's Choria transport is an adapter over it.
+
+A caller sees two classes. `Client` takes the gem's client options and the
+configuration below, and answers `upload` and `download` with an `Outcome`
+per node:
+
+```ruby
+require 'mcollective'
+require 'mcollective/util/file_transfer'
+
+client = MCollective::Util::FileTransfer::Client.new(options, mutex: @rpc_mutex)
+
+client.upload('/srv/app.tar', '/opt/app/app.tar', ['web1.example.net', 'web2.example.net'])
+client.download('/var/log/app.log', { 'web1.example.net' => '/tmp/logs/web1' })
+```
+
+`upload` sends a file, or a directory tree, to the same destination on every
+node and returns a hash from identity to `Outcome`. A success carries the
+path the file landed at, a failure a `kind` and a message. The kinds are
+`no_response`, `rpc_error`, `rpc_failed`, `transfer_failed`,
+`payload_too_large`, and `checksum_mismatch`. `download` takes the local
+directory that receives each node's copy and returns the same.
+
+Inside, the Client is the front desk. It checks the request's paths and
+starts an `Upload` or a `Download` for it. That object owns the whole
+action: it knows its nodes and what happened to each, and its `run` method
+is the lifecycle, step by step. Every
+step gets the nodes still in play and answers with the failures among them,
+plus whatever it produced, such as where each node's file lands. `run`
+keeps the failures, drops those nodes from the next step, and at the end
+turns the nodes that survived every step into successes, in one place. The
+files move through a `Sender` or a `Receiver`, chunk by chunk, and every
+chunk, like every other step, is one `Rpc` call: one request to a set of
+nodes with their replies. Nothing is shared between layers and nothing
+reaches up.
+
+```
+callers          mco file_transfer, OpenBolt's Choria transport, any Ruby caller
+   |             Client.new(options, mutex: ...), upload, download, an Outcome per node back
+   |
+Client           the entry: upload, download. Reads the caller's paths as UTF-8 and
+   |             refuses invalid ones, builds the Connection and one Rpc from the
+   |             options and the sizes, starts a new Upload or Download per call.
+   +-------------------+
+   |                   |                     every class on the left makes its calls
+Upload              Download                 through Rpc, on the right:
+one upload, run:    one download: stat         Upload    stat, mkdir
+where the source    with a digest, the         Download  stat, list
+lands on each       local directories,         Sender    put, abort
+node, each file     each file through          Receiver  get
+through the Sender  the Receiver, run
+   |                   |
+Sender              Receiver                 Rpc           one request to a set of nodes, the
+one file to the     one file from the           |          replies by identity; the only reader
+nodes, chunk by     nodes, chunk by             |          of the gem's replies; the broker's
+chunk through       chunk through get,          |          limit, the message data size, the
+put, digest at      verified and renamed        |          batch sizes
+the end             into place                  |
+                                            Connection    the gem's RPC client per call, under
+                                                |          the caller's mutex, behind the guard
+                                                |
+                                            the agent      put, abort, get, stat, list, mkdir
+                                            on each node
+```
+
+Three rules decide every contract in the library: information goes down as
+arguments, results come back up as return values, and an object mutates
+only its own state. Each step takes the nodes still pending and returns the
+failures among them, `run` carries one pending list that shrinks after
+every step, and `Outcome.per_identity` builds the successes once at the
+end. `Rpc` is the only code that reads the gem's replies, sorted by
+identity at the end of every call.
+
+Reading the library, every file under `files/mcollective/util/file_transfer/`
+opens with the sentence that says what it does and does not do. An upload
+reads top down as `Client#upload`, `Upload#run` with its steps,
+`Sender#send_file` per file, `Rpc#call` per chunk, the agent's `put`. A
+download reads as `Client#download`, `Download#run` and `fetch`,
+`Receiver#receive_file` per file, `Rpc#call` per round, the agent's
+`get`, with the `Receiver` assembling each copy under a temporary name
+beside its destination and renaming it into place once it is verified.
+
+The arguments of `Client.new`:
+
+- `options`: the gem's client options hash, the parsed mco options in an
+  mco application, the transport's client options in OpenBolt.
+- `mutex`: the lock every call runs under, a caller's own when its process
+  has other RPC calls to serialize with, as OpenBolt passes its
+  transport's. Without it, a lock of the client's own.
+- `logger`: any object with `debug(message)`, `warn(message)`, and
+  `warn_once(id, message)`. The default writes to `MCollective::Log`.
+- `rpc_timeout`: seconds to wait for every node's reply to one call, and to
+  publish one call to every node. Default 300. The wait ends a call on a
+  node that will never answer rather than bounding a healthy transfer,
+  and one window covers a whole batch of chunk requests, so a slow link
+  needs a longer wait or a smaller `upload_batch_size`. The wait is never
+  shorter than the agent's DDL timeout, 120 seconds, within which a node's
+  server stops any request.
+- `message_data_size`: the data one message carries, in kibibytes, which
+  is the file content of a chunk and the most a directory listing may
+  weigh. Without it, half the broker's message size limit, 512 at the
+  NATS default of 1 MiB.
+- `upload_batch_size`: how many nodes one chunk request is published to at
+  once. Without it, the largest number that keeps one batch under 256 MiB
+  in memory on the client at the broker's limit.
+
+Each message carries half the limit the broker advertises by default,
+512 KiB of file content at the default 1 MiB, which leaves the other
+half for the signed envelope, the two base64 passes, and the transport
+headers around it, as the design document accounts for. A download round
+asks for the same, since a reply carrying it weighs less than a request:
+the node signs nothing and sends no certificate. A directory listing is
+asked for under the same size, and a node whose tree lists larger refuses
+it. A publish guard refuses a request over the limit before it leaves the
+client and fails those nodes with `payload_too_large`, naming a lower
+message data size as the remedy. A node that does not answer a chunk is
+reported as `no_response`. Nothing is retried.
+
+The library publishes unthreaded and forces that on every client it
+builds, whatever `threaded` says in the client configuration or in the
+options. MCollective's threaded publisher runs in a thread nothing waits
+for, so the guard's refusal would be lost there and the nodes would read
+as `no_response`. Threaded publishing may be revisited in a later
+version.
+
+A chunk request is published once per node, and the client holds every
+copy in memory until it is written, so a chunk goes to `upload_batch_size`
+nodes at a time through MCollective's batched requests, each batch with
+its own publish and reply windows. One `rpc_timeout` window covers one
+batch's requests on the wire, 256 MiB at the default batch size.
+
+Every reply of a download round lands on the client's one broker
+connection, and the broker closes a connection whose unread backlog passes
+64 MiB, stalling the senders above three quarters of that. A download
+round therefore asks the largest number of nodes at a time that keeps one
+round of replies at their wire size under that threshold, 48 at the NATS
+default of 1 MiB.
+
 ## Installation
 
 The module is a Puppet module that depends on `choria/mcollective`. Put it
@@ -85,11 +231,15 @@ mcollective::plugin_classes:
 
 The Choria module contains every class in that list, and this one installs
 the agent, its DDL files, and its policy file where `mcollective::server`
-is true, through `mcollective::module_plugin`. The files land under
-`mcollective/` in the Choria libdir, `/opt/puppetlabs/mcollective/plugins`
-by default. The Choria server picks up the agent without a restart. Without
-Puppet, the files listed in `data/plugin.yaml` go under `mcollective/` in
-the Choria libdir of a server. The agent reads no settings, so
+is true, and the client library where `mcollective::client` is true,
+through `mcollective::module_plugin`. The Choria module sets
+`mcollective::client` to false by default, so the host that runs OpenBolt
+needs it set to true, or `mcollective_agent_file_transfer::client: true`
+for this module alone. The files land under `mcollective/` in the Choria
+libdir, `/opt/puppetlabs/mcollective/plugins` by default. The Choria server
+picks up the agent without a restart. Without Puppet, the files listed in
+`data/plugin.yaml` go under `mcollective/` in the Choria libdir of a server
+or a client. The agent reads no settings, so
 `mcollective_agent_file_transfer::server_config` needs no keys.
 
 The agent runs on Linux, macOS, and Windows nodes under the Puppet agent's
