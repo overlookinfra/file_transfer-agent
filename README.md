@@ -199,6 +199,29 @@ round therefore asks the largest number of nodes at a time that keeps one
 round of replies at their wire size under that threshold, 48 at the NATS
 default of 1 MiB.
 
+### Command line
+
+The client files also install `mco file_transfer`:
+
+```
+mco file_transfer upload /srv/app.tar /opt/app/app.tar -I web1.example.net -I web2.example.net
+mco file_transfer download /var/log/app.log /tmp/logs -F role=web
+```
+
+`upload` sends a file or directory tree to the destination on every matched
+node. `download` fetches the source from every matched node into a directory
+under `DIRECTORY` named after the node, such as
+`DIRECTORY/web1.example.net/app.log`. The usual filters select the nodes,
+and `--rpc-timeout`, `--message-data-size` and `--upload-batch-size` map
+onto the client arguments above. mco's own
+`--timeout` has no effect on this command, which is why it has a flag of
+its own, and `--discovery-timeout` bounds the discovery of the nodes.
+`--one`, `--limit-nodes` and `--batch` are
+refused, since the library addresses every node it is given and batches
+on its own. The exit code follows mco commands: 0 when every node
+succeeded, 2 when any failed, 3 when no node responded, and 1 when no
+node matched.
+
 ## Installation
 
 The module is a Puppet module that depends on `choria/mcollective`. Put it
@@ -231,15 +254,16 @@ mcollective::plugin_classes:
 
 The Choria module contains every class in that list, and this one installs
 the agent, its DDL files, and its policy file where `mcollective::server`
-is true, and the client library where `mcollective::client` is true,
-through `mcollective::module_plugin`. The Choria module sets
-`mcollective::client` to false by default, so the host that runs OpenBolt
-needs it set to true, or `mcollective_agent_file_transfer::client: true`
-for this module alone. The files land under `mcollective/` in the Choria
-libdir, `/opt/puppetlabs/mcollective/plugins` by default. The Choria server
-picks up the agent without a restart. Without Puppet, the files listed in
-`data/plugin.yaml` go under `mcollective/` in the Choria libdir of a server
-or a client. The agent reads no settings, so
+is true, and the client library and `mco file_transfer` where
+`mcollective::client` is true, through `mcollective::module_plugin`. The
+Choria module sets `mcollective::client` to false by default, so the host
+that runs `mco file_transfer` or OpenBolt needs it set to true, or
+`mcollective_agent_file_transfer::client: true` for this module alone. The
+files land under `mcollective/` in the Choria libdir,
+`/opt/puppetlabs/mcollective/plugins` by default. The Choria server picks
+up the agent without a restart. Without Puppet, the
+files listed in `data/plugin.yaml` go under `mcollective/` in the Choria
+libdir of a server or a client. The agent reads no settings, so
 `mcollective_agent_file_transfer::server_config` needs no keys.
 
 The agent runs on Linux, macOS, and Windows nodes under the Puppet agent's
