@@ -69,6 +69,19 @@ RSpec.describe 'the file_transfer agent list action' do
     expect(reply.statusmsg).to include("The listing of #{dir} does not fit in 100 bytes", 'take its subdirectories one at a time')
   end
 
+  it 'weighs an entry as the reply carries it, with a quote or a backslash at four bytes, so its JSON size alone does not fit' do
+    create_files('a.txt')
+    raw = JSON.generate(list(dir).data['entries'].first).bytesize
+
+    refused = list(dir, max_bytes: raw)
+    listed = list(dir, max_bytes: raw * 2)
+
+    expect(refused.statuscode).to eq(1)
+    expect(refused.statusmsg).to include("does not fit in #{raw} bytes")
+    expect(listed.statuscode).to eq(0)
+    expect(entry_names(listed)).to eq(['a.txt'])
+  end
+
   it 'rejects a negative max_bytes' do
     reply = list(dir, max_bytes: -1)
 

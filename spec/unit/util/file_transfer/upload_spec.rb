@@ -163,7 +163,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(outcomes[node1]).to be_success
   end
 
-  it 'drops a node whose chunk the agent refused and reports the agent message' do
+  it 'drops a node whose chunk was refused, reports the message and still tells it to abort' do
     stub_put do |args, names|
       names.map do |name|
         next rpc_result(name, {}, statuscode: 1, statusmsg: 'No space left on device') if name == node2 && args[:offset] == 16_384
@@ -176,7 +176,9 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
 
     later = put_calls.select { |call| call[:offset] == 32_768 }
     expect(later.map { |call| call[:identities] }).to eq([[node1]])
-    expect(abort_calls).to be_empty
+    # The node's server answers status 1 itself for an agent it killed or
+    # a request it refused, so the abort goes out whatever removed the file.
+    expect(abort_calls.map { |call| call[:identities] }).to eq([[node2]])
     expect(outcomes[node2].kind).to eq(:transfer_failed)
     expect(outcomes[node2].message).to include('No space left on device')
     expect(outcomes[node1]).to be_success
@@ -202,7 +204,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(outcomes[node1].message).to include('No space left on device')
     expect(outcomes[node2].kind).to eq(:checksum_mismatch)
     expect(outcomes[node2].message).to include("The file_transfer.put #{destination} (final) call on #{node2} failed", "got #{wrong_digest}")
-    expect(abort_calls).to be_empty
+    expect(abort_calls.map { |call| call[:identities] }).to eq([nodes])
   end
 
   it 'reports a node that never answers, aborts on it and carries on with the rest' do
@@ -250,7 +252,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     outcomes = client.upload(source, destination, nodes)
 
     expect(outcomes[node2].kind).to eq(:no_response)
-    expect(log.warnings).to include(a_string_including(".file_transfer-#{put_calls.first[:token]} beside #{destination} stays on #{node2}", 'No response'))
+    expect(log.warnings).to include(a_string_including(".file_transfer-#{put_calls.first[:token]} beside #{destination} may remain on #{node2}", 'No response'))
   end
 
   it 'stops an upload whose source shrank underneath it and reports the node' do
@@ -378,6 +380,45 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     expect(connection.calls).to be_empty
   end
 
+  it 'fails every node and sends nothing when the source cannot be opened' do
+    allow(File).to receive(:open).and_wrap_original do |original, path, *args, &block|
+      raise Errno::EACCES, path if path == source
+
+      original.call(path, *args, &block)
+    end
+
+    outcomes = client.upload(source, destination, nodes)
+
+    expect(put_calls).to be_empty
+    expect(abort_calls).to be_empty
+    expect(outcomes.values.map(&:kind).uniq).to eq([:transfer_failed])
+    expect(outcomes[node1].message).to include("Reading #{source} failed", 'Errno::EACCES')
+  end
+
+  it 'fails every node and aborts on them when a later read of the source fails' do
+    allow(File).to receive(:open).and_wrap_original do |original, path, *args, &block|
+      next original.call(path, *args, &block) unless path == source
+
+      original.call(path, *args) do |file|
+        reads = 0
+        allow(file).to receive(:read).and_wrap_original do |read, *read_args|
+          reads += 1
+          raise Errno::EIO, path if reads == 2
+
+          read.call(*read_args)
+        end
+        block.call(file)
+      end
+    end
+
+    outcomes = client.upload(source, destination, nodes)
+
+    expect(put_calls.map { |call| call[:offset] }).to eq([0])
+    expect(outcomes.values.map(&:kind).uniq).to eq([:transfer_failed])
+    expect(outcomes[node1].message).to include("Reading #{source} failed", 'Errno::EIO')
+    expect(abort_calls.map { |call| call[:identities] }).to eq([nodes])
+  end
+
   it 'fails every node for a source that is a named pipe, without opening it' do
     pipe = File.join(workdir, 'pipe')
     File.mkfifo(pipe, 0o600)
@@ -477,11 +518,12 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
         super + (args[:destination] == '/opt/app/source.bin' ? 1_000_000 : 0)
       end
 
-      it 'keeps the group whose chunk already landed and fails only the refused one' do
+      it 'keeps the group whose chunk already landed, fails only the refused one and tells it to abort' do
         outcomes = client.upload(source, '/opt/app', nodes)
 
         expect(outcomes[node1]).to be_success
         expect(outcomes[node2].kind).to eq(:payload_too_large)
+        expect(abort_calls.map { |call| call[:identities] }).to eq([[node2]])
       end
     end
   end

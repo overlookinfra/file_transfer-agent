@@ -230,6 +230,16 @@ RSpec.describe MCollective::Application::File_transfer do
       expect { application.validate_configuration(application.configuration) }.to raise_error(RuntimeError, /--batch options are not supported/)
     end
 
+    # The library refuses these too, but only once discovery has run.
+    [:rpc_timeout, :message_data_size, :upload_batch_size].each do |name|
+      it "refuses a #{name} of zero before discovery" do
+        configure('download', '/var/log/app.log', workdir, name => 0)
+
+        expect { application.validate_configuration(application.configuration) }
+          .to raise_error(RuntimeError, "The --#{name.to_s.tr('_', '-')} option must be above zero")
+      end
+    end
+
     it 'accepts an upload of an existing file and a download into an existing directory' do
       source = File.join(workdir, 'app.tar')
       File.write(source, 'tar')

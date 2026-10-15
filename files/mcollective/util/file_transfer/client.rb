@@ -24,7 +24,8 @@ module MCollective
         #   publish one call to every node. The wait ends a call on a node that will never answer
         #   rather than bounding a healthy transfer, so the default is long enough for a batch of
         #   chunk requests on a slow link. It is never shorter than the agent's DDL timeout, within
-        #   which a node's server stops any request.
+        #   which a node's server stops any request, and every request carries it as its TTL, so
+        #   a node still accepts a copy that a slow link delivers late in the window.
         # @param message_data_size [Integer, nil] The data one message carries, in kibibytes, which
         #   is the file content of a chunk and the most a directory listing may weigh, or nil for
         #   half the broker's message size limit
@@ -54,7 +55,8 @@ module MCollective
         # @param identities [Array<String>] The nodes to send to
         # @return [Hash{String => Outcome}] By identity, with success being the path the file landed at
         # @raise [ArgumentError] When the source name or the destination is not valid UTF-8
-        # @raise [SystemCallError] When the source cannot be read, such as one that does not exist
+        # @raise [SystemCallError] When the source cannot be stat-ed, such as one that does not
+        #   exist. A source that can be stat-ed and then not read fails every node in the outcome instead.
         def upload(source, destination, identities)
           source = utf8(source, 'source name')
           destination = utf8(destination, 'destination')

@@ -55,6 +55,22 @@ RSpec.describe 'the file_transfer agent abort action' do
     expect(File.binread(temp_file)).to eq('partial')
   end
 
+  it 'answers removed false for a destination that is a device, beside which put creates nothing' do
+    reply = run_agent('abort', { destination: '/dev/null', token: token })
+
+    expect(reply.statuscode).to eq(0)
+    expect(reply.data).to eq('removed' => false)
+  end
+
+  it 'answers removed false when the destination\'s directory is a regular file' do
+    File.write(destination, 'a file where the directory would be')
+
+    reply = run_agent('abort', { destination: File.join(destination, 'inner.bin'), token: token })
+
+    expect(reply.statuscode).to eq(0)
+    expect(reply.data).to eq('removed' => false)
+  end
+
   it 'answers Aborted and leaves a directory standing at the temporary name' do
     other = SecureRandom.hex(8)
     Dir.mkdir(File.join(root, ".file_transfer-#{other}"))

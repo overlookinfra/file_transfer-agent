@@ -66,15 +66,15 @@ module MCollective
           handles = {}
           digests = {}
           failures = {}
-          group.each do |identity|
-            path = File.join(File.dirname(destinations[identity]), "#{TEMP_PREFIX}#{SecureRandom.hex(8)}")
-            handles[identity] = File.new(path, File::RDWR | File::CREAT | File::EXCL | File::BINARY, 0o600)
-            digests[identity] = Digest::SHA256.new
-          rescue SystemCallError => e
-            failures[identity] = write_failure(identity, destinations[identity], e)
-          end
           placed = {}
           begin
+            group.each do |identity|
+              path = File.join(File.dirname(destinations[identity]), "#{TEMP_PREFIX}#{SecureRandom.hex(8)}")
+              handles[identity] = File.new(path, File::RDWR | File::CREAT | File::EXCL | File::BINARY, 0o600)
+              digests[identity] = Digest::SHA256.new
+            rescue SystemCallError => e
+              failures[identity] = write_failure(identity, destinations[identity], e)
+            end
             pending = group - failures.keys
             offset = 0
             while (asking = pending.select { |identity| offset < stats[identity][:size] }).any?
@@ -91,9 +91,11 @@ module MCollective
                 next
               end
 
-              # The mode the node reported with the owner's bits added, under
-              # the umask, which is what net-scp's open gives a downloaded file.
-              handles[identity].chmod((stats[identity][:mode].to_i(8) | 0o600) & ~File.umask)
+              # The permission bits the node reported with the owner's bits
+              # added, under the umask, which is what net-scp's open gives a
+              # downloaded file, and without the setuid, setgid and sticky
+              # bits, which the node chose and this host has no use for.
+              handles[identity].chmod(((stats[identity][:mode].to_i(8) & 0o777) | 0o600) & ~File.umask)
               # The close flushes what the writes buffered, so a full disk
               # can show here first.
               handles[identity].close

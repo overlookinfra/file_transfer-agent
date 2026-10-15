@@ -73,6 +73,11 @@ module MCollective
           raise 'The --one, --limit-nodes and --batch options are not supported, the library addresses every node it is given and batches on its own'
         end
 
+        [:rpc_timeout, :message_data_size, :upload_batch_size].each do |name|
+          value = configuration[name]
+          raise "The --#{name.to_s.tr('_', '-')} option must be above zero" if value && !value.positive?
+        end
+
         if configuration[:command] == 'upload'
           raise "#{configuration[:source]} does not exist" unless File.exist?(configuration[:source])
         else
@@ -98,7 +103,8 @@ module MCollective
         puts "#{outcomes.length} #{outcomes.length == 1 ? 'node' : 'nodes'}, #{failed} failed"
         # The exit codes of mco commands, 0 when every node succeeded, 2 when
         # any failed, 3 when no node responded, and 1 when none matched,
-        # which the discovery check above gives.
+        # which the discovery check above gives, or when the command could
+        # not run, which mco answers itself for an exception.
         exit 0 if failed.zero?
         exit 3 if outcomes.values.all? { |outcome| outcome.kind == :no_response }
 

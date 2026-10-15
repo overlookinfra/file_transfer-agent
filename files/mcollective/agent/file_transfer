@@ -136,22 +136,31 @@ module FileTransfer
       rescue StandardError
         # The library drops a node at its first failure and resends no
         # chunk, so the partial file has no future. The close comes first,
-        # since Windows refuses to remove an open file.
-        file.close
+        # since Windows refuses to remove an open file, and a close that
+        # fails to flush a buffered write raises again, which must not
+        # keep the file.
+        begin
+          file.close
+        rescue SystemCallError
+          # The descriptor is closed either way.
+        end
         FileUtils.rm_f(path)
         raise
       end
       written
     end
 
-    # Removes the temporary file of an upload that will not finish.
+    # Removes the temporary file of an upload that will not finish. Only
+    # the destination's shape matters here, since the file lies beside it
+    # whatever stands at the destination itself, and a destination that
+    # put refused has nothing beside it.
     #
     # @return [Hash] removed, as the DDL declares
     def abort
-      path = temp_path(destination_input, token_input)
+      path = temp_path(path_input('destination'), token_input)
       found = begin
         File.lstat(path)
-      rescue Errno::ENOENT
+      rescue Errno::ENOENT, Errno::ENOTDIR
         nil
       end
       File.unlink(path) if found
@@ -210,9 +219,9 @@ module FileTransfer
     # it, parents before their contents. The walk never follows a link, so
     # a link to a directory is listed and its contents are not, and no
     # link can make the walk loop. The directory itself is resolved first,
-    # so a link to a directory can still be listed. A listing that outgrows
-    # max_bytes, which the caller sizes to what one reply may carry, is
-    # refused.
+    # so a link to a directory can still be listed. A listing that
+    # outgrows max_bytes, which the caller sizes to what one reply may
+    # carry, is refused, weighed as the reply carries it.
     #
     # @return [Hash] entries, as the DDL declares
     def list
@@ -240,7 +249,12 @@ module FileTransfer
         Find.prune if description.nil?
 
         entries << description.merge('name' => name)
-        bytes += JSON.generate(entries.last).bytesize
+        json = JSON.generate(entries.last)
+        # The reply carries the listing as JSON inside two JSON strings
+        # before the base64 pass the caller's budget covers, so a quote or
+        # a backslash weighs four bytes there, and a <, > or &, which the
+        # server writes as < and the like, nine.
+        bytes += json.bytesize + (3 * json.count('"\\')) + (8 * json.count('<>&'))
         next if bytes <= max_bytes
 
         raise Failure.new(ABORTED, "The listing of #{path} does not fit in #{max_bytes} bytes at #{entries.length} entries, so the directory " \

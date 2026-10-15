@@ -52,6 +52,16 @@ RSpec.describe 'the file_transfer protocol' do
       expect(reply.stderr.lines.length).to be > 1
       expect(reply.stderr.lines[1]).to include('.rb:')
     end
+
+    it 'reports an action that raises as UnknownError, naming the action and the error on stderr with its backtrace' do
+      reply = run_agent('get', { 'path' => root, 'offset' => 'x', 'max_bytes' => 5 })
+
+      expect(reply.statuscode).to eq(5)
+      expect(reply.statusmsg).to start_with('NoMethodError:')
+      expect(reply.data).to eq({})
+      expect(reply.stderr).to start_with('The file_transfer get action raised NoMethodError:')
+      expect(reply.stderr.lines.length).to be > 1
+    end
   end
 
   describe 'the request data' do

@@ -88,6 +88,21 @@ module FileTransferDownloadHelpers
     end
   end
 
+  # Every temporary file beside a destination raises the error at its
+  # close, after closing, as a full disk does under a buffered write.
+  def fail_close_of_temporary_files(error)
+    allow(File).to receive(:new).and_wrap_original do |original, path, *args|
+      file = original.call(path, *args)
+      if File.basename(path).start_with?('.file_transfer-')
+        allow(file).to receive(:close).and_wrap_original do |close|
+          close.call
+          raise error, path
+        end
+      end
+      file
+    end
+  end
+
   # The names under the downloaded tree of a node, or nil without a tree.
   def downloaded_tree(node)
     dir = File.join(dir_for(node), 'data')

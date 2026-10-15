@@ -34,10 +34,12 @@ module MCollective
         # mode. Returns the failures among them; the rest received the
         # whole file. Every chunk carries its destination, which names the
         # directory of the temporary file, and one token per file, which
-        # names the file. Nothing resends a chunk, so a node that was sent
-        # a chunk and did not finish is told to abort, which removes its
-        # temporary file, unless its own agent refused a chunk and removed
-        # the file already.
+        # names the file. Nothing resends a chunk, so every node that was
+        # sent a chunk and did not finish is told to abort, which removes
+        # its temporary file where there is one. The agent removes the file
+        # itself when its own put fails, but a status 1 reply can come from
+        # the node's server as well, for a request it refused or an agent
+        # it killed, so the abort goes out either way.
         #
         # @param source [String] The local file to send
         # @param destinations [Hash{String => String}]
@@ -51,7 +53,6 @@ module MCollective
           token = SecureRandom.hex(8)
           pending = destinations.keys
           failures = {}
-          refused = []
           started = false
           finished = false
           begin
@@ -91,9 +92,7 @@ module MCollective
                 end
 
                 started = true
-                step, step_refused = send_chunk(pending, destinations, args)
-                failures.merge!(step)
-                refused.concat(step_refused)
+                failures.merge!(send_chunk(pending, destinations, args))
                 pending -= failures.keys
                 finished = args[:final] == true
                 break if finished || pending.empty?
@@ -106,7 +105,7 @@ module MCollective
             failures.merge!(Outcome.failures(pending, :transfer_failed) { "Reading #{source} failed: #{e.class}: #{e.message}" })
           ensure
             if started
-              unfinished = failures.keys - refused
+              unfinished = failures.keys
               unfinished += pending unless finished
               send_abort(destinations.slice(*unfinished), token) unless unfinished.empty?
             end
@@ -118,36 +117,33 @@ module MCollective
 
         # Sends one chunk to the identities, once per distinct destination
         # since the destination names the temporary file's directory, and a
-        # batch of nodes per request. Returns the failures and the nodes
-        # whose agent refused the chunk, which removed the file itself. A
-        # final chunk refused while reporting a digest other than the one
-        # sent is a checksum mismatch.
+        # batch of nodes per request. Returns the failures. A final chunk
+        # refused while reporting a digest other than the one sent is a
+        # checksum mismatch.
         #
         # @param identities [Array<String>] The nodes to send to
         # @param destinations [Hash{String => String}] Identity to the path the file ends up at
         # @param args [Hash] The put arguments of the chunk, without the destination
-        # @return [Array(Hash{String => Outcome}, Array<String>)]
+        # @return [Hash{String => Outcome}]
         def send_chunk(identities, destinations, args)
           failures = {}
-          refused = []
           identities.group_by { |identity| destinations[identity] }.each do |destination, group|
             context = "file_transfer.put #{destination}#{' (final)' if args[:final]}"
             response = @rpc.call(group, context, batch_size: @rpc.upload_batch_size) { |client| client.put(args.merge(destination: destination)) }
-            refused.concat(response.aborted.keys)
             response.errors.each do |identity, outcome|
               actual = response.aborted.dig(identity, :sha256)
               mismatch = args[:sha256] && actual.is_a?(String) && actual != args[:sha256]
               failures[identity] = mismatch ? Outcome.failure(identity, :checksum_mismatch, outcome.message) : outcome
             end
           end
-          [failures, refused]
+          failures
         end
 
         # Tells the nodes to remove the temporary file of a file that will
         # not finish, grouped by destination like the chunks. A node whose
-        # abort fails or stays silent keeps the file until someone removes
-        # it, which is a warning, since the node's own failure is already
-        # the one in the outcome.
+        # abort fails or stays silent may keep the file until someone
+        # removes it, which is a warning, since the node's own failure is
+        # already the one in the outcome.
         #
         # @param destinations [Hash{String => String}] Identity to the path the file was for
         # @param token [String] The token that names the temporary file
@@ -156,7 +152,8 @@ module MCollective
             identities = pairs.map(&:first)
             response = @rpc.call(identities, "file_transfer.abort #{destination}") { |client| client.abort(destination: destination, token: token) }
             response.errors.each do |identity, outcome|
-              @logger.warn("The temporary file .file_transfer-#{token} beside #{destination} stays on #{identity}: #{outcome.message}")
+              @logger.warn("The temporary file .file_transfer-#{token} beside #{destination} may remain on #{identity}, since its abort failed: " \
+                           "#{outcome.message}")
             end
           end
         end

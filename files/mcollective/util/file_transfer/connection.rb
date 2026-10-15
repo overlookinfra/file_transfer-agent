@@ -57,7 +57,11 @@ module MCollective
         #
         # @param agent [String] The agent name
         # @param identities [Array<String>] The nodes the client addresses
-        # @param timeout [Numeric] Seconds to wait for the replies
+        # @param timeout [Numeric] Seconds to wait for the replies, which the request carries as
+        #   its TTL as well. A node drops a request older than its TTL, and the copies at the end
+        #   of a large batch leave the controller last, so a request stays acceptable for as long
+        #   as the controller waits for its reply and no longer, which keeps a late chunk ahead
+        #   of the abort that follows the wait.
         # @param publish_timeout [Numeric] Seconds allowed for publishing the request to every
         #   identity. Publishing is unthreaded, whatever the options and the client
         #   configuration say, so that an exception raised while publishing reaches the
@@ -72,7 +76,8 @@ module MCollective
             # configuration's default_batch_size, is dropped. The gem would
             # send each call to a random subset of the nodes, or split every
             # call into batches with a sleep between them.
-            options = @options.merge(verbose: false, publish_timeout: publish_timeout, mcollective_limit_targets: false, batch_size: 0)
+            options = @options.merge(verbose: false, publish_timeout: publish_timeout, ttl: timeout, mcollective_limit_targets: false,
+              batch_size: 0)
             client = RPC::Client.new(agent, options: options)
             # The gem ORs this option with the client configuration and has
             # no setter, so a configuration of true would win and the publish

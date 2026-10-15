@@ -221,11 +221,12 @@ module MCollective
         end
 
         # Creates every listed directory locally for the pending nodes, the
-        # root first, each with the mode its node reported and the owner's
-        # bits added, as net-scp makes a downloaded directory, so a tree
-        # with a read-only directory can still be written while it lands. A
-        # node leaves the pending set at the first directory that cannot be
-        # made for it.
+        # root first, each with the permission bits its node reported and
+        # the owner's bits added, under the umask, as net-scp makes a
+        # downloaded directory, so a tree with a read-only directory can
+        # still be written while it lands, and without the setuid, setgid
+        # and sticky bits, which the node chose. A node leaves the pending
+        # set at the first directory that cannot be made for it.
         #
         # @param directories [Hash{String => Hash{String => String}}] Relative path to the mode
         #   per identity that has it
@@ -241,7 +242,13 @@ module MCollective
             (modes.keys & (pending - failures.keys)).each do |identity|
               local = tree_path_for(identity, destination_dirs, source, relative)
               begin
-                FileUtils.mkdir_p(local, mode: modes[identity].to_i(8) | 0o700)
+                # Whatever is missing above the directory is this host's
+                # own, the node's directory included, so it is made under
+                # the umask alone before the listed directory gets its
+                # node's mode, which mkdir_p would otherwise give the
+                # parents too.
+                FileUtils.mkdir_p(File.dirname(local))
+                FileUtils.mkdir_p(local, mode: ((modes[identity].to_i(8) & 0o777) | 0o700) & ~File.umask)
               rescue SystemCallError => e
                 failures[identity] = Outcome.failure(identity, :transfer_failed, "#{local} could not be created for #{identity}: #{e.class}: #{e.message}")
                 next

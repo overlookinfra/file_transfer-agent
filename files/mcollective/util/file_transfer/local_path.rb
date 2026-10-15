@@ -14,11 +14,10 @@ module MCollective
         # without an extension.
         WINDOWS_RESERVED_NAMES = /\A(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?\z/i
 
-        # A backslash is refused because it is a path separator on Windows,
-        # which is also why the DDL refuses it in a name. Control characters,
-        # the C1 range included, are refused because the agent refuses them
-        # in a name and the DDL refuses a newline in a path, and because a
-        # terminal acts on them instead of showing them.
+        # A backslash is refused because it is a path separator on Windows.
+        # Control characters, the C1 range included, are refused because a
+        # terminal acts on them instead of showing them, and the DDL already
+        # refuses a newline in a path.
         #
         # @param name [Object] The string, as a node listed it or as an identity
         # @return [Boolean]

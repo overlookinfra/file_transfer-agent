@@ -8,9 +8,9 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
   let(:options) { { timeout: 5, collective: 'mcollective', filter: {} } }
   let(:connection) { described_class.new(options) }
 
-  it 'builds a client for the agent that addresses the identities directly and yields it' do
+  it 'builds a client for the agent that addresses the identities directly, with the wait as the request TTL, and yields it' do
     expect(MCollective::RPC::Client).to receive(:new)
-      .with('file_transfer', options: hash_including(verbose: false, publish_timeout: 30, collective: 'mcollective'))
+      .with('file_transfer', options: hash_including(verbose: false, publish_timeout: 30, ttl: 12, collective: 'mcollective'))
       .and_return(rpc_client)
     expect(rpc_client).to receive(:discover).with(nodes: ['node1.example.com'])
     expect(rpc_client).to receive(:progress=).with(false)

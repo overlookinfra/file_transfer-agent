@@ -300,10 +300,11 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(outcomes.values.map(&:message)).to all(include('".." is not a plain file name'))
   end
 
-  # The mode the node reported with the owner's bits added, under the
-  # umask, as net-scp gives a downloaded file.
-  it 'places each copy with the mode its stat reported, readable and writable by the owner, under the umask' do
-    stub_file_stats(contents, { node1 => '0640', node2 => '0446' })
+  # The permission bits the node reported with the owner's bits added,
+  # under the umask, as net-scp gives a downloaded file, and without the
+  # special bits the node chose.
+  it 'places each copy with the permission bits its stat reported, readable and writable by the owner, under the umask, without the setuid bit' do
+    stub_file_stats(contents, { node1 => '4640', node2 => '0446' })
     stub_get
     previous = File.umask(0o022)
 
@@ -313,13 +314,31 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       File.umask(previous)
     end
 
-    expect(File.stat(File.join(dir_for(node1), 'app.log')).mode & 0o777).to eq(0o640)
-    expect(File.stat(File.join(dir_for(node2), 'app.log')).mode & 0o777).to eq(0o644)
+    expect(File.stat(File.join(dir_for(node1), 'app.log')).mode & 0o7777).to eq(0o640)
+    expect(File.stat(File.join(dir_for(node2), 'app.log')).mode & 0o7777).to eq(0o644)
   end
 
   it 'leaves nothing beside the destination when the download is interrupted' do
     stub_file_stats
     stub_get_replies { |_args, _name| raise Interrupt }
+
+    expect { client.download('/var/log/app.log', destination_dirs) }.to raise_error(Interrupt)
+    expect(Dir.children(dir_for(node1))).to be_empty
+    expect(Dir.children(dir_for(node2))).to be_empty
+  end
+
+  it 'leaves nothing beside the destinations when making the temporary files is interrupted' do
+    stub_file_stats
+    stub_get
+    made = 0
+    allow(File).to receive(:new).and_wrap_original do |original, path, *args|
+      if File.basename(path).start_with?('.file_transfer-')
+        made += 1
+        raise Interrupt if made == 2
+      end
+
+      original.call(path, *args)
+    end
 
     expect { client.download('/var/log/app.log', destination_dirs) }.to raise_error(Interrupt)
     expect(Dir.children(dir_for(node1))).to be_empty
@@ -348,12 +367,17 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
   end
 
   context 'with a directory tree' do
-    # Each directory gets the mode its node listed with the owner's bits
-    # added, as net-scp makes a downloaded directory, so a read-only one can
-    # still be written while the tree lands.
-    it 'creates a remote subdirectory that holds nothing, with its listed mode and the owner bits' do
-      stub_directory_stats
-      rpc.on(:list) { |_args, names| results_for(names, { entries: [{ name: 'empty', type: 'directory', symlink: false, mode: '0555' }] }) }
+    # Each directory gets the permission bits its node listed with the
+    # owner's bits added, under the umask, as net-scp makes a downloaded
+    # directory, so a read-only one can still be written while the tree
+    # lands, without the special bits the node chose, and the node's own
+    # directory above the tree is this host's, under the umask alone.
+    it 'creates the listed directories with their permission bits and the owner bits under the umask, and the node directory under the umask alone' do
+      stub_stat { |_args, names| results_for(names, { exists: true, type: 'directory', symlink: false, mode: '1777' }) }
+      rpc.on(:list) do |_args, names|
+        results_for(names, { entries: [{ name: 'empty', type: 'directory', symlink: false, mode: '0555' },
+                                       { name: 'open', type: 'directory', symlink: false, mode: '2777' }] })
+      end
       previous = File.umask(0o022)
 
       begin
@@ -363,8 +387,10 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       end
 
       expect(outcomes[node1]).to be_success
-      expect(File.stat(File.join(dir_for(node1), 'data', 'empty')).mode & 0o777).to eq(0o755)
-      expect(File.stat(File.join(dir_for(node1), 'data')).mode & 0o777).to eq(0o755)
+      expect(File.stat(File.join(dir_for(node1), 'data', 'empty')).mode & 0o7777).to eq(0o755)
+      expect(File.stat(File.join(dir_for(node1), 'data', 'open')).mode & 0o7777).to eq(0o755)
+      expect(File.stat(File.join(dir_for(node1), 'data')).mode & 0o7777).to eq(0o755)
+      expect(File.stat(dir_for(node1)).mode & 0o7777).to eq(0o755)
     end
 
     it 'reports the node when a listed file can no longer be stat-ed' do
@@ -380,8 +406,9 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(outcomes[node1].message).to include('does not exist')
     end
 
-    { 'a size' => { size: nil }, 'a mode' => { mode: 'rw-r--r--' } }.each do |field, odd|
-      it "reports a node whose file is described without a usable #{field} and stops asking for it" do
+    { 'a size' => { size: nil }, 'a size at least zero' => { size: -1 }, 'a digest' => { sha256: nil },
+      'a mode' => { mode: 'rw-r--r--' } }.each do |field, odd|
+      it "reports a node whose file is described without #{field} and stops asking for it" do
         stub_stat do |args, names|
           data = if args[:path] == '/srv/data'
                    { exists: true, type: 'directory', symlink: false, mode: '0755' }
@@ -416,6 +443,28 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(outcomes[node1]).to be_success
       expect(outcomes[node2].kind).to eq(:transfer_failed)
       expect(outcomes[node2].message).to include('lists "sub" without a usable mode')
+      expect(downloaded_tree(node2)).to be_nil
+    end
+
+    it 'fails only the node whose tree root is described without a usable mode, before listing it' do
+      stub_flat_tree({ node1 => { 'a.txt' => 'a' }, node2 => { 'a.txt' => 'a' } })
+      stub_stat do |args, names|
+        names.map do |name|
+          data = if args[:path] == '/srv/data'
+                   { exists: true, type: 'directory', symlink: false, mode: name == node2 ? nil : '0755' }
+                 else
+                   { exists: true, type: 'file', symlink: false, size: 1, mode: '0644', sha256: Digest::SHA256.hexdigest('a') }
+                 end
+          rpc_result(name, data)
+        end
+      end
+
+      outcomes = client.download('/srv/data', destination_dirs)
+
+      expect(list_calls.map(&:last)).to eq([[node1]])
+      expect(outcomes[node1]).to be_success
+      expect(outcomes[node2].kind).to eq(:transfer_failed)
+      expect(outcomes[node2].message).to include("/srv/data on #{node2} was described without a usable mode")
       expect(downloaded_tree(node2)).to be_nil
     end
 

@@ -11,10 +11,12 @@ module MCollective
       # node's reply or failure by identity. It also knows what the broker
       # allows a call: the payload limit every message is held under, the
       # data one message carries, and how many nodes one call addresses at
-      # once. Status code 1 is a failure
-      # for every one of the agent's actions, and so is a reply without a
-      # data hash or without a status code. A code above 1 is an RPC error,
-      # a missing reply is no_response, and an exception fails every identity.
+      # once. Status code 1 is a failure for every one of the agent's
+      # actions, and so is a reply without a status code or with an array
+      # for data. A code above 1 is an RPC error, a missing reply is
+      # no_response, and an exception fails every identity of the call,
+      # which is where a reply the gem itself cannot convert ends, one with
+      # null or a string for data.
       class Rpc
         AGENT = 'file_transfer'
         DEFAULT_MAX_PAYLOAD = 1_048_576
@@ -208,9 +210,7 @@ module MCollective
           by_sender = {}
           results.each do |result|
             sender = result[:sender]
-            if sender.nil?
-              @logger.warn("Discarding #{context} response with nil sender")
-            elsif !expected.include?(sender)
+            if !expected.include?(sender)
               @logger.warn("Discarding #{context} response from unexpected sender #{sender.inspect}")
             elsif by_sender.key?(sender)
               @logger.warn("Ignoring duplicate #{context} response from #{sender}")

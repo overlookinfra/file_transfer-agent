@@ -87,7 +87,7 @@ RSpec.describe 'the file_transfer agent stat action' do
     fifo = File.join(root, 'pipe')
     File.mkfifo(fifo, 0o600)
 
-    reply = run_agent('stat', { path: fifo, checksum: true })
+    reply = Timeout.timeout(10) { run_agent('stat', { path: fifo, checksum: true }) }
 
     expect(reply.statuscode).to eq(0)
     expect(reply.data).to include('exists' => true, 'type' => 'other', 'symlink' => false, 'size' => 0, 'mode' => '0600', 'sha256' => nil)
@@ -166,6 +166,16 @@ RSpec.describe 'the file_transfer agent stat action' do
     expect(reply.statuscode).to eq(4)
     expect(reply.statusmsg).to include('The path input must be an absolute path')
     expect(reply.stdout).to be_empty
+  end
+
+  it 'refuses a path that is not valid UTF-8' do
+    # The request file carries the raw byte, which no JSON string can spell.
+    body = JSON.generate(request('stat', { 'path' => "#{file}.marker" })).sub('.marker', "\xE9".b)
+
+    reply = run_agent('stat', { path: file }, request_body: body)
+
+    expect(reply.statuscode).to eq(4)
+    expect(reply.statusmsg).to include('The path input must be an absolute path')
   end
 
   it 'normalizes parent references in the path before describing it' do

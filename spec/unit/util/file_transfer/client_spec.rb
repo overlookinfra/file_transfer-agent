@@ -32,6 +32,16 @@ RSpec.describe MCollective::Util::FileTransfer::Client do
     end
   end
 
+  describe 'the connection it builds' do
+    it 'gets the caller\'s options and mutex' do
+      caller_options = { config: '/etc/choria/client.conf' }
+      mutex = Mutex.new
+      expect(MCollective::Util::FileTransfer::Connection).to receive(:new).with(caller_options, mutex: mutex).and_return(connection)
+
+      described_class.new(caller_options, mutex: mutex, logger: log)
+    end
+  end
+
   describe 'the first debug line' do
     it 'names the upload and counts its nodes' do
       stub_stat { |_args, names| results_for(names, { exists: false }) }

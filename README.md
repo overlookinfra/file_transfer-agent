@@ -158,7 +158,9 @@ The arguments of `Client.new`:
   and one window covers a whole batch of chunk requests, so a slow link
   needs a longer wait or a smaller `upload_batch_size`. The wait is never
   shorter than the agent's DDL timeout, 120 seconds, within which a node's
-  server stops any request.
+  server stops any request, and every request carries it as its TTL, so
+  a node still accepts a copy that a slow link delivers late in the
+  window.
 - `message_data_size`: the data one message carries, in kibibytes, which
   is the file content of a chunk and the most a directory listing may
   weigh. Without it, half the broker's message size limit, 512 at the
@@ -173,8 +175,9 @@ half for the signed envelope, the two base64 passes, and the transport
 headers around it, as the design document accounts for. A download round
 asks for the same, since a reply carrying it weighs less than a request:
 the node signs nothing and sends no certificate. A directory listing is
-asked for under the same size, and a node whose tree lists larger refuses
-it. A publish guard refuses a request over the limit before it leaves the
+asked for under the same size, weighed as the reply carries it, where a
+quote costs four bytes, and a node whose tree lists larger refuses it. A
+publish guard refuses a request over the limit before it leaves the
 client and fails those nodes with `payload_too_large`, naming a lower
 message data size as the remedy. A node that does not answer a chunk is
 reported as `no_response`. Nothing is retried.
@@ -220,7 +223,7 @@ its own, and `--discovery-timeout` bounds the discovery of the nodes.
 refused, since the library addresses every node it is given and batches
 on its own. The exit code follows mco commands: 0 when every node
 succeeded, 2 when any failed, 3 when no node responded, and 1 when no
-node matched.
+node matched or the command could not run.
 
 ## Installation
 

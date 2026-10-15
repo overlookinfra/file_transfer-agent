@@ -39,12 +39,36 @@ RSpec.describe MCollective::Util::FileTransfer::Receiver do
     expect(outcomes[node2]).to be_success
   end
 
-  it 'finishes a node by the size its stat reported, whatever its replies say about the end' do
+  it 'fails the node whose copy cannot be flushed at its close and leaves nothing beside the destination' do
+    stub_file_stats
+    stub_get
+    fail_close_of_temporary_files(Errno::ENOSPC)
+
+    outcomes = client.download('/var/log/app.log', destination_dirs.slice(node1))
+
+    expect(outcomes[node1].kind).to eq(:transfer_failed)
+    expect(outcomes[node1].message).to include("#{File.join(dir_for(node1), 'app.log')} could not be written from #{node1}", 'Errno::ENOSPC')
+    expect(Dir.children(dir_for(node1))).to be_empty
+  end
+
+  it 'still answers and removes the copy when the close of a failed node\'s file raises' do
+    # The same length, so the digest is the only thing that gives it away.
+    stub_file_stats(node1 => 'c' * 100)
+    stub_get(node1 => 'd' * 100)
+    fail_close_of_temporary_files(Errno::EIO)
+
+    outcomes = client.download('/var/log/app.log', destination_dirs.slice(node1))
+
+    expect(outcomes[node1].kind).to eq(:checksum_mismatch)
+    expect(Dir.children(dir_for(node1))).to be_empty
+  end
+
+  it 'asks no second round once the size its stat reported is covered' do
     stub_file_stats(node1 => 'a' * 100)
     stub_get_replies do |_args, _name|
       raise 'the client kept asking a node whose size was covered' if get_calls.length > 1
 
-      { data: encoded('a' * 100), bytes: 100, size: 100, eof: false }
+      { data: encoded('a' * 100), bytes: 100, size: 100 }
     end
 
     outcomes = client.download('/var/log/app.log', destination_dirs.slice(node1))
