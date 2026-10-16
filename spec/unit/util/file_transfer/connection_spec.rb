@@ -112,6 +112,29 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
     end
   end
 
+  describe 'the base64 check it puts in front of the gem\'s decode' do
+    before { connection }
+
+    it 'decodes a payload the gem accepts, with the line breaks the gem\'s own encoder adds' do
+      expect(MCollective::SSL.base64_decode("aGVs\nbG8=\n")).to eq('hello')
+    end
+
+    it 'refuses a payload with a character outside base64, as the gem does' do
+      expect { MCollective::SSL.base64_decode('aGVs*bG8=') }.to raise_error(ArgumentError, 'invalid base64')
+    end
+
+    it 'refuses an empty payload, as the gem does' do
+      expect { MCollective::SSL.base64_decode('') }.to raise_error(ArgumentError, 'invalid base64')
+    end
+
+    it 'changes the SSL module on the first connection only' do
+      ancestors = MCollective::SSL.singleton_class.ancestors
+      described_class.new(options)
+
+      expect(MCollective::SSL.singleton_class.ancestors).to eq(ancestors)
+    end
+  end
+
   it 'runs every call under the mutex it is given, so a caller can share its own lock' do
     mutex = Mutex.new
     shared = described_class.new(options, mutex: mutex)

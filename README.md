@@ -191,6 +191,12 @@ for, so the guard's refusal would be lost there and the nodes would read
 as `no_response`. Threaded publishing may be revisited in a later
 version.
 
+The library also replaces the check the gem runs on every received
+message before decoding its base64, a regex over the whole message that
+costs the controller more than decoding and parsing the reply together,
+with the same check through `String#count`. It reaches into the gem for
+that as it does for the threaded flag.
+
 A chunk request is published once per node, and the client holds every
 copy in memory until it is written, so a chunk goes to `upload_batch_size`
 nodes at a time through MCollective's batched requests, each batch with

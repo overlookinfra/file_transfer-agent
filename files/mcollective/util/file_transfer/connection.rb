@@ -22,7 +22,8 @@ module MCollective
       # messages checked against the first call's limit or none. A caller
       # whose process serializes its other RPC calls with a lock of its own,
       # as OpenBolt does, passes that lock as the mutex and the options its
-      # clients use.
+      # clients use. It also puts a cheap base64 check in front of the gem's
+      # decode of every received message.
       class Connection
         # Prepended onto the NATS wrapper class, the one object every
         # request in the process is published through. The NATS client
@@ -44,12 +45,28 @@ module MCollective
         end
         private_constant :PublishGuard
 
+        # Prepended onto the gem's SSL module, whose base64_decode runs a
+        # regex over the whole of every received message before decoding
+        # it, which costs the client more than everything else it does with
+        # a reply. The same check through String#count takes a few hundred
+        # microseconds per megabyte. The decode is the one the gem does.
+        module Base64Decode
+          def base64_decode(string)
+            raise(ArgumentError, 'invalid base64') if string.empty? || string.count("^A-Za-z0-9+/= \t\r\n\f\v").positive?
+
+            string.unpack1('m')
+          end
+        end
+        private_constant :Base64Decode
+
         # @param options [Hash] The client options, Util.default_options by default
         # @param mutex [Mutex] The lock every call runs under, a caller's own when its process
         #   has other RPC calls to serialize with
         def initialize(options = Util.default_options, mutex: Mutex.new)
           @options = options
           @mutex = mutex
+          # Ruby prepends a module once, so a second connection changes nothing.
+          SSL.singleton_class.prepend(Base64Decode)
         end
 
         # Yields an RPC client for the agent that addresses the identities
