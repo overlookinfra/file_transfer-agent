@@ -135,6 +135,44 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
     end
   end
 
+  describe 'the direct publish it puts in place of the gem\'s' do
+    let(:wrapper) { FakeNatsWrapper.new }
+    let(:connector) do
+      connector = MCollective::Connector::Nats.allocate
+      connector.instance_variable_set(:@config, instance_double(MCollective::Config, identity: 'client.example.com', collectives: ['mcollective']))
+      connector.instance_variable_set(:@connection, wrapper)
+      connector
+    end
+    let(:message) do
+      instance_double(MCollective::Message, discovered_hosts: ['node1.example.com', 'node2.example.com'], payload: 'cGF5bG9hZA==',
+        agent: 'file_transfer', type: :direct_request, collective: 'mcollective', headers: {}, reply_to: 'mcollective.reply.client.1.2')
+    end
+
+    before do
+      allow(MCollective::Log).to receive(:debug)
+      connection
+    end
+
+    it 'publishes one copy of the same message to each node\'s own subject, with the reply subject' do
+      connector.publish_connected_directed(message)
+
+      expect(wrapper.messages.map(&:first)).to eq(['mcollective.node.node1.example.com', 'mcollective.node.node2.example.com'])
+      expect(wrapper.messages.map { |_, body, _| body }.uniq.length).to eq(1)
+      expect(wrapper.messages.map(&:last)).to all(eq('mcollective.reply.client.1.2'))
+      expect(JSON.parse(wrapper.messages.first[1])).to eq(
+        'protocol' => 'choria:transport:1', 'data' => 'cGF5bG9hZA==',
+        'headers' => { 'mc_sender' => 'client.example.com', 'reply-to' => 'mcollective.reply.client.1.2' }
+      )
+    end
+
+    it 'changes the connector class on the first connection only' do
+      ancestors = MCollective::Connector::Nats.ancestors
+      described_class.new(options)
+
+      expect(MCollective::Connector::Nats.ancestors).to eq(ancestors)
+    end
+  end
+
   it 'runs every call under the mutex it is given, so a caller can share its own lock' do
     mutex = Mutex.new
     shared = described_class.new(options, mutex: mutex)

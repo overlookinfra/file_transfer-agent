@@ -8,14 +8,16 @@ require File.expand_path('../../files/mcollective/util/file_transfer', __dir__)
 # Stands in for the NATS wrapper, the one object every request is
 # published through, which the publish guard prepends onto.
 class FakeNatsWrapper
-  attr_reader :published
+  attr_reader :published, :messages
 
   def initialize
     @published = []
+    @messages = []
   end
 
-  def publish(_destination, payload, _reply = nil)
+  def publish(destination, payload, reply = nil)
     @published << payload.bytesize
+    @messages << [destination, payload, reply]
   end
 end
 

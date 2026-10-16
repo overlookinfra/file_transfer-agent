@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
+require 'json'
 require 'mcollective'
+require 'mcollective/connector/nats'
 
 module MCollective
   module Util
@@ -23,7 +25,8 @@ module MCollective
       # whose process serializes its other RPC calls with a lock of its own,
       # as OpenBolt does, passes that lock as the mutex and the options its
       # clients use. It also puts a cheap base64 check in front of the gem's
-      # decode of every received message.
+      # decode of every received message, and builds the body of a direct
+      # request once rather than once per node.
       class Connection
         # Prepended onto the NATS wrapper class, the one object every
         # request in the process is published through. The NATS client
@@ -59,6 +62,24 @@ module MCollective
         end
         private_constant :Base64Decode
 
+        # Prepended onto the gem's NATS connector, whose direct publish
+        # serializes the same message body again for every node it
+        # addresses, a few milliseconds per node for a chunk. The body is
+        # the payload and the headers, which are the same for every node,
+        # so it is built once here and published to each node's subject.
+        module DirectPublish
+          def publish_connected_directed(msg)
+            target = target_for(msg, msg.discovered_hosts.first)
+            data = { 'protocol' => 'choria:transport:1', 'data' => msg.payload, 'headers' => target[:headers] }.to_json
+            msg.discovered_hosts.each do |node|
+              name = make_target(msg.agent, msg.type, msg.collective, node)
+              Log.debug("Sending a direct message to #{node} via NATS target '#{name}' for message type #{msg.type}")
+              connection.publish(name, data, target[:headers]['reply-to'])
+            end
+          end
+        end
+        private_constant :DirectPublish
+
         # @param options [Hash] The client options, Util.default_options by default
         # @param mutex [Mutex] The lock every call runs under, a caller's own when its process
         #   has other RPC calls to serialize with
@@ -67,6 +88,7 @@ module MCollective
           @mutex = mutex
           # Ruby prepends a module once, so a second connection changes nothing.
           SSL.singleton_class.prepend(Base64Decode)
+          Connector::Nats.prepend(DirectPublish)
         end
 
         # Yields an RPC client for the agent that addresses the identities

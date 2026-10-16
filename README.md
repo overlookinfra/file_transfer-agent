@@ -200,7 +200,10 @@ that as it does for the threaded flag.
 A chunk request is published once per node, and the client holds every
 copy in memory until it is written, so a chunk goes to `upload_batch_size`
 nodes at a time through MCollective's batched requests, each batch with
-its own publish and reply windows. One `rpc_timeout` window covers one
+its own publish and reply windows. The library builds the body of those
+copies once per batch and publishes it to each node's subject, in place
+of the gem's direct publish, which serializes the same body again for
+every node. One `rpc_timeout` window covers one
 batch's requests on the wire, 256 MiB at the default batch size.
 
 Every reply of a download round lands on the client's one broker
