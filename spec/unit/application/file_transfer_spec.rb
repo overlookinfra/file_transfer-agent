@@ -158,15 +158,12 @@ RSpec.describe MCollective::Application::File_transfer do
   describe 'the logger it gives the library' do
     let(:logger) { described_class::TerminalLogger.new }
 
-    it 'prints a warning on stderr even with Ruby warnings off, and one with an id once' do
+    it 'prints a warning on stderr even with Ruby warnings off' do
       verbose = $VERBOSE
       $VERBOSE = nil
       begin
-        expect do
-          logger.warn("Skipping /srv/data/linked on #{node1}, a symbolic link to a directory")
-          logger.warn_once('file_transfer_max_payload_unknown', 'The broker limit could not be read')
-          logger.warn_once('file_transfer_max_payload_unknown', 'The broker limit could not be read')
-        end.to output("Skipping /srv/data/linked on #{node1}, a symbolic link to a directory\nThe broker limit could not be read\n").to_stderr
+        expect { logger.warn("Skipping /srv/data/linked on #{node1}, a symbolic link to a directory") }
+          .to output("Skipping /srv/data/linked on #{node1}, a symbolic link to a directory\n").to_stderr
       ensure
         $VERBOSE = verbose
       end

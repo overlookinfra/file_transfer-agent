@@ -19,7 +19,7 @@ module MCollective
         #   build them
         # @param mutex [Mutex, nil] The lock every call runs under, a caller's own when its
         #   process has other RPC calls to serialize with, or nil for one of this client's own
-        # @param logger [#debug, #warn, #warn_once] Receives the log lines, see DefaultLogger
+        # @param logger [#debug, #warn] Receives the log lines, see DefaultLogger
         # @param rpc_timeout [Integer] Seconds to wait for every node's reply to one call, and to
         #   publish one call to every node. The wait ends a call on a node that will never answer
         #   rather than bounding a healthy transfer, so the default is long enough for a batch of
@@ -28,9 +28,9 @@ module MCollective
         #   a node still accepts a copy that a slow link delivers late in the window.
         # @param message_data_size [Integer, nil] The data one message carries, in kibibytes, which
         #   is the file content of a chunk and the most a directory listing may weigh, or nil for
-        #   half the broker's message size limit
+        #   512, half the broker's 1 MiB message size limit
         # @param upload_batch_size [Integer, nil] How many nodes one chunk request is published to
-        #   at once, or nil for the largest number that keeps a batch under Rpc::UPLOAD_BATCH_BYTES
+        #   at once, or nil for 256, which keeps a batch under Rpc::UPLOAD_BATCH_BYTES at the broker's limit
         # @raise [ArgumentError] When the timeout or a size is given that is not an integer above zero
         def initialize(options, mutex: nil, logger: DefaultLogger.new, rpc_timeout: 300, message_data_size: nil, upload_batch_size: nil)
           # A chunk of zero bytes would loop a download forever, and a timeout

@@ -35,15 +35,15 @@ module MCollective
       option :message_data_size,
         arguments: ['--message-data-size KIBIBYTES'],
         description: 'Data per request in kibibytes, the file content of a chunk and the most a directory listing may ' \
-                     'weigh. Without it, half the broker message size limit, 512 at the NATS default of 1 MiB. A request ' \
+                     'weigh. Without it, 512, half the Choria broker message size limit of 1 MiB, which has no setting. A request ' \
                      'over the limit fails its node with payload_too_large, and a reply over it never arrives, so the ' \
                      'node shows as no_response.',
         type: Integer
 
       option :upload_batch_size,
         arguments: ['--upload-batch-size NODES'],
-        description: 'How many nodes one chunk request is published to at once. Without it, the size is chosen to keep one ' \
-                     'batch of requests under 256 MiB of memory on this host at the broker message size limit.',
+        description: 'How many nodes one chunk request is published to at once. Without it, 256, which keeps one batch of ' \
+                     'requests under 256 MiB of memory on this host at the broker message size limit.',
         type: Integer
 
       option :rpc_timeout,

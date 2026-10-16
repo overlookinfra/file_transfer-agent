@@ -110,16 +110,6 @@ module MCollective
           PublishGuard.limit = nil
         end
 
-        # The payload limit the broker advertised when the wrapper's client
-        # connected, as the server info states it, or nil before that
-        # connection, since the server info arrives with it. The wrapper
-        # keeps its client to itself, so this reads the instance variable.
-        #
-        # @return [Object] The advertised value, an Integer from a real broker
-        def max_payload
-          nats_wrapper.instance_variable_get(:@client).server_info[:max_payload]
-        end
-
         private
 
         # The NATS wrapper every request is published through. The connector

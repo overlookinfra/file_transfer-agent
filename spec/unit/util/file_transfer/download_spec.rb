@@ -141,9 +141,9 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(outcomes[node1].message).to include('nats: connection refused')
   end
 
-  # A broker limit at the whole backlog bounds a download round to one node.
+  # A backlog of two messages bounds a download round to one node.
   context 'with a download round of one node' do
-    let(:max_payload) { 64 * 1024 * 1024 }
+    before { stub_const('MCollective::Util::FileTransfer::Rpc::BROKER_PENDING_LIMIT', 2 * 1024 * 1024) }
 
     it 'downloads one node at a time' do
       stub_file_stats
@@ -173,13 +173,12 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
   # Two replies at the broker limit fit under three quarters of the
   # backlog and a third does not.
-  context 'with replies large enough that three nodes overrun the broker backlog' do
-    let(:max_payload) { 4_000 }
+  context 'with a backlog that two replies at the broker limit fit under and a third does not' do
     let(:node3) { 'node3.example.com' }
     let(:nodes) { [node1, node2, node3] }
     let(:contents) { { node1 => 'a' * 100, node2 => 'b' * 100, node3 => 'c' * 100 } }
 
-    before { stub_const('MCollective::Util::FileTransfer::Rpc::BROKER_PENDING_LIMIT', 12_000) }
+    before { stub_const('MCollective::Util::FileTransfer::Rpc::BROKER_PENDING_LIMIT', 3 * 1024 * 1024) }
 
     it 'asks two nodes at a time' do
       stub_file_stats
@@ -723,7 +722,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
 
     context 'with a download round of one node' do
-      let(:max_payload) { 64 * 1024 * 1024 }
+      before { stub_const('MCollective::Util::FileTransfer::Rpc::BROKER_PENDING_LIMIT', 2 * 1024 * 1024) }
 
       it 'lists one round of nodes at a time, since every reply may weigh the message data size' do
         stub_flat_tree({ node1 => { 'a.txt' => 'a' }, node2 => { 'b.txt' => 'b' } })

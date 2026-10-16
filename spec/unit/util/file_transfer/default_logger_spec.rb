@@ -12,19 +12,4 @@ RSpec.describe MCollective::Util::FileTransfer::DefaultLogger do
     logger.debug('probing')
     logger.warn('shrinking')
   end
-
-  it 'warns once per id' do
-    expect(MCollective::Log).to receive(:warn).with('first').once
-
-    logger.warn_once('reduction', 'first')
-    logger.warn_once('reduction', 'second')
-  end
-
-  it 'warns again for another id' do
-    expect(MCollective::Log).to receive(:warn).with('first').once
-    expect(MCollective::Log).to receive(:warn).with('second').once
-
-    logger.warn_once('reduction', 'first')
-    logger.warn_once('fallback', 'second')
-  end
 end

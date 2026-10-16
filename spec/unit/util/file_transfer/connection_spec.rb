@@ -71,25 +71,8 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
     expect(options).to eq(timeout: 5, collective: 'mcollective', filter: {})
   end
 
-  describe '#max_payload' do
-    it 'reads the payload limit off the wrapper client\'s server info once it has connected' do
-      wrapper = FakeNatsWrapper.new(4_194_304)
-      allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(instance_double(MCollective::Connector::Nats, connection: wrapper))
-
-      expect { connection.max_payload }.to raise_error(NoMethodError)
-      wrapper.connect
-      expect(connection.max_payload).to eq(4_194_304)
-    end
-
-    it 'raises when no connector plugin is loaded' do
-      allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_raise('No plugin connector_plugin defined')
-
-      expect { connection.max_payload }.to raise_error(RuntimeError, 'No plugin connector_plugin defined')
-    end
-  end
-
   describe '#guard' do
-    let(:wrapper) { FakeNatsWrapper.new(4_194_304) }
+    let(:wrapper) { FakeNatsWrapper.new }
 
     before do
       allow(MCollective::PluginManager).to receive(:[]).with('connector_plugin').and_return(instance_double(MCollective::Connector::Nats, connection: wrapper))

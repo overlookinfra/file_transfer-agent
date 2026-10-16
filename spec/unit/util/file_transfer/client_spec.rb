@@ -65,7 +65,6 @@ RSpec.describe MCollective::Util::FileTransfer::Client do
 
   context 'without a message data size' do
     let(:message_data_size) { nil }
-    let(:max_payload) { 4 * 1024 * 1024 }
 
     # The fake weighs a request at twice its content, more than a real one
     # at half the limit, so here a request weighs its content and an envelope.
@@ -73,42 +72,26 @@ RSpec.describe MCollective::Util::FileTransfer::Client do
       decoded(args).bytesize + 300
     end
 
-    it 'sends half the broker limit of file content per request' do
+    it 'sends 512 KiB of file content per request, half the broker limit' do
       stub_stat { |_args, names| results_for(names, { exists: false }) }
       stub_put
-      source = local_file('source.bin', SecureRandom.random_bytes((2 * 1024 * 1024) + 100))
+      source = local_file('source.bin', SecureRandom.random_bytes(600 * 1024))
 
       outcomes = client.upload(source, '/opt/app/source.bin', [node1])
 
-      expect(put_calls.map { |call| decoded(call).bytesize }).to eq([2 * 1024 * 1024, 100])
+      expect(put_calls.map { |call| decoded(call).bytesize }).to eq([512 * 1024, 88 * 1024])
       expect(outcomes[node1]).to be_success
-      expect(log.debugs.count("Each message carries up to #{2 * 1024 * 1024} bytes of data")).to eq(1)
+      expect(log.debugs.count('Each message carries up to 524288 bytes of data')).to eq(1)
     end
 
-    it 'asks for half the broker limit per get reply and per listing' do
+    it 'asks for 512 KiB per get reply and per listing' do
       stub_flat_tree({ node1 => { 'a.txt' => 'a' } })
 
       outcomes = client.download('/srv/data', destination_dirs.slice(node1))
 
       expect(outcomes[node1]).to be_success
-      expect(rpc.calls.find { |call| call.first == :list }[1]).to include(max_bytes: 2 * 1024 * 1024)
-      expect(get_calls.map { |call| call[:max_bytes] }).to eq([2 * 1024 * 1024])
-    end
-
-    context 'when the broker limit cannot be read' do
-      let(:wrapper) { FakeNatsWrapper.new(nil) }
-
-      it 'sends 512 KiB per request under the assumed limit' do
-        stub_stat { |_args, names| results_for(names, { exists: false }) }
-        stub_put
-        source = local_file('source.bin', SecureRandom.random_bytes(600 * 1024))
-
-        outcomes = client.upload(source, '/opt/app/source.bin', [node1])
-
-        expect(log.once_ids).to eq(['file_transfer_max_payload_unknown'])
-        expect(put_calls.map { |call| decoded(call).bytesize }).to eq([512 * 1024, 88 * 1024])
-        expect(outcomes[node1]).to be_success
-      end
+      expect(rpc.calls.find { |call| call.first == :list }[1]).to include(max_bytes: 512 * 1024)
+      expect(get_calls.map { |call| call[:max_bytes] }).to eq([512 * 1024])
     end
   end
 

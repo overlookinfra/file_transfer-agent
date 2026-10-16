@@ -19,7 +19,10 @@ module MCollective
       # null or a string for data.
       class Rpc
         AGENT = 'file_transfer'
-        DEFAULT_MAX_PAYLOAD = 1_048_576
+        # The Choria broker's message size limit, nats-server's default,
+        # which go-choria has no setting for. Every size below derives from
+        # it, and the publish guard holds every message under it.
+        MAX_PAYLOAD = 1_048_576
         # Every reply of a download round lands on the client's one broker
         # connection. nats-server closes a connection whose unread backlog
         # passes this many bytes, after stalling the senders above the
@@ -43,8 +46,8 @@ module MCollective
           end
         end
 
-        # @param connection [Connection] Builds the RPC clients and reads the broker's limit
-        # @param logger [#debug, #warn, #warn_once]
+        # @param connection [Connection] Builds the RPC clients
+        # @param logger [#debug, #warn]
         # @param rpc_timeout [Numeric] Seconds to wait for every node's reply to one call, and to
         #   publish one call to every node, raised to the agent's DDL timeout when that is longer
         # @param message_data_kib [Integer, nil] The caller's choice of data per message in
@@ -58,49 +61,37 @@ module MCollective
           @upload_batch_size = upload_batch_size
         end
 
-        # The payload limit the broker advertised, or the default with a
-        # warning that names why it could not be read. The first call reads
-        # it after its client has connected, since the connector has no
-        # server info before then, so a size asked for before any call is
-        # an error rather than a guess.
-        #
-        # @return [Integer] Bytes
-        # @raise [RuntimeError] Before the first call
-        def max_payload
-          @max_payload || raise('No call has run yet, so the broker message size limit has not been read')
-        end
-
         # The data one message carries, in bytes, which is the file content
         # of a put or a get and the most a listing may weigh. The caller's
         # choice, or half the broker's limit, which leaves the other half
-        # for the envelope and the base64 passes around the data. Asked for
-        # after an operation's first call, which reads the limit.
+        # for the envelope and the base64 passes around the data. Logged
+        # once, when an operation first asks for it.
         #
         # @return [Integer]
         def message_data_bytes
           @message_data_bytes ||= begin
-            bytes = @message_data_kib ? @message_data_kib * 1024 : max_payload / 2
+            bytes = @message_data_kib ? @message_data_kib * 1024 : MAX_PAYLOAD / 2
             @logger.debug("Each message carries up to #{bytes} bytes of data")
             bytes
           end
         end
 
         # How many nodes one chunk request is published to at once, the
-        # caller's choice or the largest number that keeps a batch under
-        # UPLOAD_BATCH_BYTES.
+        # caller's choice or the number that keeps a batch under
+        # UPLOAD_BATCH_BYTES at the broker's limit.
         #
         # @return [Integer]
         def upload_batch_size
-          @upload_batch_size || [UPLOAD_BATCH_BYTES / max_payload, 1].max
+          @upload_batch_size || (UPLOAD_BATCH_BYTES / MAX_PAYLOAD)
         end
 
-        # How many nodes one download round asks at once, the largest number
-        # that keeps one round of replies, each at most the broker's limit,
-        # under the broker's stall threshold.
+        # How many nodes one download round asks at once, the number whose
+        # replies, each at most the broker's limit, stay under the broker's
+        # stall threshold.
         #
         # @return [Integer]
         def download_batch_size
-          [(BROKER_PENDING_LIMIT * BROKER_STALL_FRACTION / max_payload).floor, 1].max
+          (BROKER_PENDING_LIMIT * BROKER_STALL_FRACTION / MAX_PAYLOAD).floor
         end
 
         # Invokes the action the block calls on the yielded RPC client and
@@ -126,8 +117,7 @@ module MCollective
               client.batch_size = batch_size
               client.batch_sleep_time = 0
             end
-            @max_payload ||= read_max_payload
-            @connection.guard(max_payload) { yield client }
+            @connection.guard(MAX_PAYLOAD) { yield client }
           end
           responded, errors, aborted = sort_replies(results, identities, context)
           Response.new(responded: responded, errors: errors, aborted: aborted)
@@ -159,29 +149,6 @@ module MCollective
         # @return [Integer] Seconds
         def ddl_timeout
           @ddl_timeout ||= DDL.new(AGENT).meta[:timeout]
-        end
-
-        # Reads the limit from the server info of the client that has just
-        # connected, or falls back to the default.
-        #
-        # @return [Integer] Bytes
-        def read_max_payload
-          limit = @connection.max_payload
-          if limit.is_a?(Integer) && limit.positive?
-            @logger.debug("The broker limits a message to #{limit} bytes")
-            limit
-          else
-            unknown_max_payload("the server info says #{limit.inspect}")
-          end
-        rescue StandardError => e
-          unknown_max_payload("#{e.class}: #{e.message}")
-        end
-
-        def unknown_max_payload(reason)
-          @logger.warn_once('file_transfer_max_payload_unknown',
-            "The file transfer client could not read the broker's message size limit (#{reason}) and assumes " \
-            "#{DEFAULT_MAX_PAYLOAD} bytes")
-          DEFAULT_MAX_PAYLOAD
         end
 
         # The message for a node that stayed silent. A silence may be the

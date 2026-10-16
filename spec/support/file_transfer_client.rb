@@ -5,22 +5,13 @@ require 'mcollective'
 require 'tmpdir'
 require File.expand_path('../../files/mcollective/util/file_transfer', __dir__)
 
-# Stands in for the NATS wrapper: the publish guard prepends onto it and
-# the broker limit comes from its client's server info, which exists only
-# once the first RPC client has connected, as in the gem.
+# Stands in for the NATS wrapper, the one object every request is
+# published through, which the publish guard prepends onto.
 class FakeNatsWrapper
-  ServerInfoClient = Struct.new(:server_info)
-
   attr_reader :published
 
-  def initialize(max_payload)
-    @max_payload = max_payload
-    @client = nil
+  def initialize
     @published = []
-  end
-
-  def connect
-    @client = ServerInfoClient.new({ max_payload: @max_payload })
   end
 
   def publish(_destination, payload, _reply = nil)
@@ -87,7 +78,6 @@ class FakeConnection < MCollective::Util::FileTransfer::Connection
 
   def with_client(agent, identities, timeout:, publish_timeout:)
     @calls << { agent: agent, identities: identities.dup, timeout: timeout, publish_timeout: publish_timeout }
-    @wrapper.connect
     @client.discover(nodes: identities)
     yield(@client)
   end
@@ -101,12 +91,11 @@ end
 
 # Records the lines the library logged.
 class FakeLogger
-  attr_reader :debugs, :warnings, :once
+  attr_reader :debugs, :warnings
 
   def initialize
     @debugs = []
     @warnings = []
-    @once = []
   end
 
   def debug(message)
@@ -115,18 +104,6 @@ class FakeLogger
 
   def warn(message)
     @warnings << message
-  end
-
-  def warn_once(id, message)
-    @once << [id, message]
-  end
-
-  def once_ids
-    @once.map(&:first)
-  end
-
-  def once_messages
-    @once.map(&:last)
   end
 end
 
@@ -190,8 +167,7 @@ end
 RSpec.shared_context 'with a file transfer client' do
   include FileTransferClientHelpers
 
-  let(:max_payload) { 1_048_576 }
-  let(:wrapper) { FakeNatsWrapper.new(max_payload) }
+  let(:wrapper) { FakeNatsWrapper.new }
   let(:connection) { FakeConnection.new(wrapper) }
   let(:rpc) { connection.client }
   let(:log) { FakeLogger.new }

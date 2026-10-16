@@ -150,8 +150,8 @@ The arguments of `Client.new`:
 - `mutex`: the lock every call runs under, a caller's own when its process
   has other RPC calls to serialize with, as OpenBolt passes its
   transport's. Without it, a lock of the client's own.
-- `logger`: any object with `debug(message)`, `warn(message)`, and
-  `warn_once(id, message)`. The default writes to `MCollective::Log`.
+- `logger`: any object with `debug(message)` and `warn(message)`. The
+  default writes to `MCollective::Log`.
 - `rpc_timeout`: seconds to wait for every node's reply to one call, and to
   publish one call to every node. Default 300. The wait ends a call on a
   node that will never answer rather than bounding a healthy transfer,
@@ -163,16 +163,18 @@ The arguments of `Client.new`:
   window.
 - `message_data_size`: the data one message carries, in kibibytes, which
   is the file content of a chunk and the most a directory listing may
-  weigh. Without it, half the broker's message size limit, 512 at the
-  NATS default of 1 MiB.
+  weigh. Without it, 512, half the Choria broker's message size limit of
+  1 MiB, which is nats-server's default and has no setting in go-choria.
 - `upload_batch_size`: how many nodes one chunk request is published to at
-  once. Without it, the largest number that keeps one batch under 256 MiB
-  in memory on the client at the broker's limit.
+  once. Without it, 256, which keeps one batch under 256 MiB in memory on
+  the client at the broker's limit.
 
-Each message carries half the limit the broker advertises by default,
-512 KiB of file content at the default 1 MiB, which leaves the other
-half for the signed envelope, the two base64 passes, and the transport
-headers around it, as the design document accounts for. A download round
+Each message carries 512 KiB of file content by default, half the
+broker's 1 MiB limit, which leaves the other half for the signed
+envelope, the two base64 passes, and the transport headers around it, as
+the design document accounts for. The library holds that limit as one
+constant, since the Choria broker has no setting for it and a NATS server
+other than Choria's is out of scope. A download round
 asks for the same, since a reply carrying it weighs less than a request:
 the node signs nothing and sends no certificate. A directory listing is
 asked for under the same size, weighed as the reply carries it, where a
@@ -199,8 +201,8 @@ Every reply of a download round lands on the client's one broker
 connection, and the broker closes a connection whose unread backlog passes
 64 MiB, stalling the senders above three quarters of that. A download
 round therefore asks the largest number of nodes at a time that keeps one
-round of replies at their wire size under that threshold, 48 at the NATS
-default of 1 MiB.
+round of replies at their wire size under that threshold, 48 at the
+broker's 1 MiB limit.
 
 ### Command line
 
