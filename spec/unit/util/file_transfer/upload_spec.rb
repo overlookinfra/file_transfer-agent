@@ -468,7 +468,10 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
   end
 
   context 'when a chunk weighs more than the broker limit' do
-    before { stub_const('MCollective::Util::FileTransfer::Rpc::MAX_PAYLOAD', 30_000) }
+    # An envelope fat enough to carry a chunk over the limit.
+    def wire_size(args)
+      super + 1_100_000
+    end
 
     it 'fails every node before the chunk leaves the client and names the message data size as the remedy' do
       outcomes = client.upload(source, destination, nodes)
@@ -476,7 +479,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
       expect(put_calls.map { |call| decoded(call).bytesize }).to eq([16_384])
       expect(wrapper.published).to be_empty
       expect(outcomes.values.map(&:kind).uniq).to eq([:payload_too_large])
-      expect(outcomes[node1].message).to include("exceeds the broker's 30000 byte payload limit", 'Lower the message data size')
+      expect(outcomes[node1].message).to include("exceeds the broker's 1048576 byte payload limit", 'Lower the message data size')
     end
   end
 
@@ -511,11 +514,9 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#upload' do
     end
 
     context 'when the broker refuses the second landing group' do
-      before { stub_const('MCollective::Util::FileTransfer::Rpc::MAX_PAYLOAD', 200_000) }
-
       # Only the longer destination trips the guard.
       def wire_size(args)
-        super + (args[:destination] == '/opt/app/source.bin' ? 1_000_000 : 0)
+        super + (args[:destination] == '/opt/app/source.bin' ? 1_100_000 : 0)
       end
 
       it 'keeps the group whose chunk already landed, fails only the refused one and tells it to abort' do

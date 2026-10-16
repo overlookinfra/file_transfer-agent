@@ -4,6 +4,7 @@ require 'fileutils'
 require_relative 'local_path'
 require_relative 'outcome'
 require_relative 'receiver'
+require_relative 'rpc'
 
 module MCollective
   module Util
@@ -181,7 +182,7 @@ module MCollective
           directories = Hash.new { |hash, key| hash[key] = {} }
           files = Hash.new { |hash, key| hash[key] = [] }
           failures = {}
-          stats.keys.each_slice(@rpc.download_batch_size) do |group|
+          stats.keys.each_slice(Rpc::DOWNLOAD_BATCH_SIZE) do |group|
             response = @rpc.call(group, "file_transfer.list #{source}") do |client|
               client.list(path: source, max_bytes: @rpc.message_data_bytes)
             end

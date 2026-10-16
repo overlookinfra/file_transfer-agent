@@ -30,7 +30,7 @@ module MCollective
         #   is the file content of a chunk and the most a directory listing may weigh, or nil for
         #   512, half the broker's 1 MiB message size limit
         # @param upload_batch_size [Integer, nil] How many nodes one chunk request is published to
-        #   at once, or nil for 256, which keeps a batch under Rpc::UPLOAD_BATCH_BYTES at the broker's limit
+        #   at once, or nil for Rpc::UPLOAD_BATCH_SIZE, 256, which keeps a batch under 256 MiB at the broker's limit
         # @raise [ArgumentError] When the timeout or a size is given that is not an integer above zero
         def initialize(options, mutex: nil, logger: DefaultLogger.new, rpc_timeout: 300, message_data_size: nil, upload_batch_size: nil)
           # A chunk of zero bytes would loop a download forever, and a timeout

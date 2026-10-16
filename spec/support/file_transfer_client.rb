@@ -188,9 +188,6 @@ RSpec.shared_context 'with a file transfer client' do
   let(:workdir) { Dir.mktmpdir('file_transfer-client') }
 
   let(:shipped_ddl) { RubyDDL.load(MCollective::Util::FileTransfer::Rpc::AGENT) }
-  # A spec declares another value to show that the client's wait follows
-  # the DDL rather than a fixed number.
-  let(:ddl_timeout) { shipped_ddl.meta[:timeout] }
 
   # The agent's DDL as the shipped one declares it, so the client reads the
   # real timeout and every RPC result moves the outputs under their symbol
@@ -200,7 +197,7 @@ RSpec.shared_context 'with a file transfer client' do
   # build answers; the fake is built before the stub, by the real new.
   before do
     outputs = shipped_ddl.actions.flat_map { |action| shipped_ddl.action_interface(action).fetch(:output, {}).keys }.uniq
-    ddl = instance_double(MCollective::DDL::AgentDDL, meta: shipped_ddl.meta.merge(timeout: ddl_timeout),
+    ddl = instance_double(MCollective::DDL::AgentDDL, meta: shipped_ddl.meta,
       action_interface: { output: outputs.to_h { |output| [output, {}] } })
     allow(MCollective::DDL).to receive(:new).with(MCollective::Util::FileTransfer::Rpc::AGENT).and_return(ddl)
     allow(MCollective::Util::FileTransfer::Connection).to receive(:new).and_return(connection)

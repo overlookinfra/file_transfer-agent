@@ -4,6 +4,7 @@ require 'digest/sha2'
 require 'fileutils'
 require 'securerandom'
 require_relative 'outcome'
+require_relative 'rpc'
 
 module MCollective
   module Util
@@ -37,7 +38,7 @@ module MCollective
         def receive_file(source, stats, destinations)
           placed = {}
           failures = {}
-          destinations.keys.each_slice(@rpc.download_batch_size) do |group|
+          destinations.keys.each_slice(Rpc::DOWNLOAD_BATCH_SIZE) do |group|
             group_placed, group_failures = receive_group(group, source, stats, destinations)
             placed.merge!(group_placed)
             failures.merge!(group_failures)

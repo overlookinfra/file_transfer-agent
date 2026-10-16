@@ -20,21 +20,21 @@ module MCollective
       class Rpc
         AGENT = 'file_transfer'
         # The Choria broker's message size limit, nats-server's default,
-        # which go-choria has no setting for. Every size below derives from
-        # it, and the publish guard holds every message under it.
+        # which go-choria has no setting for. The publish guard holds every
+        # message under it and the two sizes below follow from it.
         MAX_PAYLOAD = 1_048_576
         # Every reply of a download round lands on the client's one broker
-        # connection. nats-server closes a connection whose unread backlog
-        # passes this many bytes, after stalling the senders above the
-        # fraction below, and the Choria broker keeps both, so one round of
-        # replies stays under the stall threshold.
-        BROKER_PENDING_LIMIT = 64 * 1024 * 1024
-        BROKER_STALL_FRACTION = 0.75
+        # connection, and nats-server closes a connection whose unread
+        # backlog passes 64 MiB after stalling the senders above three
+        # quarters of that, which the Choria broker keeps as well, so a
+        # round asks this many nodes, whose replies at the limit stay under
+        # the stall threshold.
+        DOWNLOAD_BATCH_SIZE = 48
         # The client keeps a copy of a chunk request for every node of an
         # upload batch in memory until the flusher has written it, so a
-        # batch is bounded to this many bytes at the broker's limit unless
-        # the caller chose its own size.
-        UPLOAD_BATCH_BYTES = 256 * 1024 * 1024
+        # batch is this many nodes unless the caller chose its own size,
+        # which keeps the copies under 256 MiB at the limit.
+        UPLOAD_BATCH_SIZE = 256
 
         # What one call returned. aborted holds the data of each status 1
         # reply, such as the digest the agent computed for a refused file.
@@ -77,21 +77,11 @@ module MCollective
         end
 
         # How many nodes one chunk request is published to at once, the
-        # caller's choice or the number that keeps a batch under
-        # UPLOAD_BATCH_BYTES at the broker's limit.
+        # caller's choice or UPLOAD_BATCH_SIZE.
         #
         # @return [Integer]
         def upload_batch_size
-          @upload_batch_size || (UPLOAD_BATCH_BYTES / MAX_PAYLOAD)
-        end
-
-        # How many nodes one download round asks at once, the number whose
-        # replies, each at most the broker's limit, stay under the broker's
-        # stall threshold.
-        #
-        # @return [Integer]
-        def download_batch_size
-          (BROKER_PENDING_LIMIT * BROKER_STALL_FRACTION / MAX_PAYLOAD).floor
+          @upload_batch_size || UPLOAD_BATCH_SIZE
         end
 
         # Invokes the action the block calls on the yielded RPC client and

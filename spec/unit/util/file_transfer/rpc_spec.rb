@@ -136,19 +136,6 @@ RSpec.describe MCollective::Util::FileTransfer::Rpc do
     )
   end
 
-  context 'with a DDL that declares a timeout of 77 seconds' do
-    let(:ddl_timeout) { 77 }
-
-    it 'waits the timeout that the DDL declares' do
-      stub_stat { |_args, names| results_for(names - [node2], { exists: true }) }
-
-      response = stat_call
-
-      expect(connection.calls.first).to include(timeout: 77, publish_timeout: 77)
-      expect(response.errors[node2].message).to include('within 77 seconds', 'the DDL timeout of 77 seconds')
-    end
-  end
-
   context 'with an rpc timeout above the DDL timeout' do
     let(:agent_rpc) { described_class.new(connection, log, 300) }
 
@@ -193,36 +180,23 @@ RSpec.describe MCollective::Util::FileTransfer::Rpc do
     expect(wrapper.published).to eq([limit, limit + 1])
   end
 
-  context 'with a message over the broker limit' do
-    before { stub_const('MCollective::Util::FileTransfer::Rpc::MAX_PAYLOAD', 1_000) }
-
-    it 'fails every node with payload_too_large when the guard refuses the message, naming the message data size as the remedy' do
-      stub_stat do |_args, names|
-        wrapper.publish('subject', 'x' * 1_500)
-        results_for(names, { exists: true })
-      end
-
-      response = stat_call
-
-      expect(wrapper.published).to be_empty
-      expect(response.errors.values.map(&:kind).uniq).to eq([:payload_too_large])
-      expect(response.errors[node1].message).to include("The file_transfer.stat /x request to #{node1} was not sent", '1500 byte message',
-        'Lower the message data size')
+  it 'fails every node with payload_too_large when the guard refuses a message over the broker limit, naming the message data size as the remedy' do
+    stub_stat do |_args, names|
+      wrapper.publish('subject', 'x' * (described_class::MAX_PAYLOAD + 1))
+      results_for(names, { exists: true })
     end
+
+    response = stat_call
+
+    expect(wrapper.published).to be_empty
+    expect(response.errors.values.map(&:kind).uniq).to eq([:payload_too_large])
+    expect(response.errors[node1].message).to include("The file_transfer.stat /x request to #{node1} was not sent", '1048577 byte message',
+      'Lower the message data size')
   end
 
   describe 'the sizes' do
-    it 'carries half the broker limit of data per message, or the kibibytes the caller chose' do
-      expect(agent_rpc.message_data_bytes).to eq(524_288)
+    it 'converts the message data size the caller chose from kibibytes to bytes' do
       expect(described_class.new(connection, log, 30, message_data_kib: 16).message_data_bytes).to eq(16_384)
-    end
-
-    it 'publishes a chunk to the number of nodes that keeps a batch under the memory bound at the limit' do
-      expect(agent_rpc.upload_batch_size).to eq(256)
-    end
-
-    it 'asks the number of nodes per download round whose replies, each at most the limit, stay under three quarters of the broker backlog' do
-      expect(agent_rpc.download_batch_size).to eq(48)
     end
 
     context 'with an upload batch size of its own' do

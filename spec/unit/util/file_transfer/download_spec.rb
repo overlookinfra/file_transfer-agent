@@ -141,18 +141,17 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(outcomes[node1].message).to include('nats: connection refused')
   end
 
-  # A backlog of two messages bounds a download round to one node.
-  context 'with a download round of one node' do
-    before { stub_const('MCollective::Util::FileTransfer::Rpc::BROKER_PENDING_LIMIT', 2 * 1024 * 1024) }
+  context 'with more nodes than a download round takes' do
+    let(:nodes) { (1..49).map { |number| "node#{number}.example.com" } }
 
-    it 'downloads one node at a time' do
-      stub_file_stats
-      stub_get
+    it 'lists and fetches 48 nodes per round and the rest in the next' do
+      stub_flat_tree(nodes.to_h { |node| [node, { 'a.txt' => 'a' }] })
 
-      client.download('/var/log/app.log', destination_dirs)
+      outcomes = client.download('/srv/data', destination_dirs)
 
-      expect(get_calls.first[:identities]).to eq([node1])
-      expect(get_calls.map { |call| call[:identities] }).to include([node2])
+      expect(outcomes.values).to all(be_success)
+      expect(list_calls.map { |call| call.last.length }).to eq([48, 1])
+      expect(get_calls.map { |call| call[:identities].length }).to eq([48, 1])
     end
   end
 
@@ -169,26 +168,6 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     expect(outcomes[node2]).to be_success
     expect(File.binread(File.join(dir_for(node2), 'app.log'))).to eq('b' * 100)
     expect(Dir.children(dir_for(node1))).to be_empty
-  end
-
-  # Two replies at the broker limit fit under three quarters of the
-  # backlog and a third does not.
-  context 'with a backlog that two replies at the broker limit fit under and a third does not' do
-    let(:node3) { 'node3.example.com' }
-    let(:nodes) { [node1, node2, node3] }
-    let(:contents) { { node1 => 'a' * 100, node2 => 'b' * 100, node3 => 'c' * 100 } }
-
-    before { stub_const('MCollective::Util::FileTransfer::Rpc::BROKER_PENDING_LIMIT', 3 * 1024 * 1024) }
-
-    it 'asks two nodes at a time' do
-      stub_file_stats
-      stub_get
-
-      outcomes = client.download('/var/log/app.log', destination_dirs)
-
-      expect(get_calls.map { |call| call[:identities] }).to eq([[node1, node2], [node3]])
-      expect(outcomes.values).to all(be_success)
-    end
   end
 
   # The gem raises on a reply whose data is nil while it builds the result,
@@ -719,21 +698,6 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(outcomes[node1]).to be_success
       expect(outcomes[node1].path).to eq(File.join(dir_for(node1), 'data'))
       expect(downloaded_tree(node1)).to eq([])
-    end
-
-    context 'with a download round of one node' do
-      before { stub_const('MCollective::Util::FileTransfer::Rpc::BROKER_PENDING_LIMIT', 2 * 1024 * 1024) }
-
-      it 'lists one round of nodes at a time, since every reply may weigh the message data size' do
-        stub_flat_tree({ node1 => { 'a.txt' => 'a' }, node2 => { 'b.txt' => 'b' } })
-
-        outcomes = client.download('/srv/data', destination_dirs)
-
-        expect(outcomes.values).to all(be_success)
-        expect(list_calls).to eq([['/srv/data', [node1]], ['/srv/data', [node2]]])
-        expect(downloaded_tree(node1)).to eq(['a.txt'])
-        expect(downloaded_tree(node2)).to eq(['b.txt'])
-      end
     end
   end
 end
