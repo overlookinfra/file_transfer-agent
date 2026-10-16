@@ -11,8 +11,8 @@ RSpec.describe 'the file_transfer module as installed' do
       expect(File.stat(AGENT).mode & 0o111).to eq(0o111)
     end
 
-    it 'starts with an absolute shebang naming the Ruby that Puppet ships' do
-      expect(File.new(AGENT).readline.chomp).to eq('#!/opt/puppetlabs/puppet/bin/ruby')
+    it 'starts with an absolute shebang naming the Ruby that Puppet ships, started without rubygems' do
+      expect(File.new(AGENT).readline.chomp).to eq('#!/opt/puppetlabs/puppet/bin/ruby --disable-gems')
     end
   end
 

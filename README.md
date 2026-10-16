@@ -275,10 +275,12 @@ The agent runs on Linux, macOS, and Windows nodes under the Puppet agent's
 Ruby. The agent, the client library, and the command need Ruby 3.2 or
 later, and use nothing that Ruby 4.0 removed or moved out of its default
 gems. On POSIX nodes the server runs the script through its shebang,
-`/opt/puppetlabs/puppet/bin/ruby`. On Windows the server resolves the
-agent's name through `PATHEXT`, so the module installs `file_transfer.bat`
-beside the script, which runs it with the Puppet agent's `ruby.exe` at its
-default path. There the last component of a destination may not carry a
+`/opt/puppetlabs/puppet/bin/ruby --disable-gems`, which skips rubygems,
+most of a Ruby start, since the script loads only the standard library.
+On Windows the server resolves the agent's name through `PATHEXT`, so the
+module installs `file_transfer.bat` beside the script, which runs it with
+the Puppet agent's `ruby.exe` at its default path and the same flag.
+There the last component of a destination may not carry a
 colon, a reserved device name such as `CON` or `COM1`, or a trailing dot
 or space, since Windows would put the file somewhere other than asked.
 

@@ -1,4 +1,4 @@
-#!/opt/puppetlabs/puppet/bin/ruby
+#!/opt/puppetlabs/puppet/bin/ruby --disable-gems
 # frozen_string_literal: true
 
 # Choria external agent for chunked file transfer with SHA-256 verification.
@@ -6,7 +6,8 @@
 # The Choria server runs one process per request. It names the request and
 # reply files in the environment, validates the inputs against the JSON
 # DDL before starting the process, and logs stdout at INFO and stderr at
-# ERROR.
+# ERROR. The interpreter starts without rubygems, which is most of a Ruby
+# start, since the script loads only the standard library.
 #
 # A file arrives chunk by chunk under a temporary name beside its
 # destination, .file_transfer- and a token the caller chose, until the
@@ -17,6 +18,7 @@ require 'digest'
 require 'fileutils'
 require 'find'
 require 'json'
+require 'rbconfig'
 
 module FileTransfer
   ACTIVATION_PROTOCOL = 'io.choria.mcorpc.external.v1.activation_request'
@@ -42,8 +44,11 @@ module FileTransfer
   NOFOLLOW = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0
   # Windows names have rules of their own, since a device name, a colon
   # or a trailing dot or space in the last component of a destination
-  # would land the file somewhere other than the name asked for.
-  WINDOWS = Gem.win_platform?
+  # would land the file somewhere other than the name asked for. The
+  # detection is the one rubygems 4 makes in Gem.win_platform?, its host_os
+  # patterns, since the script starts without rubygems.
+  WINDOWS_HOST_OS = /bccwin|djgpp|mingw|mswin|wince/i
+  WINDOWS = RbConfig::CONFIG['host_os'].match?(WINDOWS_HOST_OS)
   # Ruby's Windows port defines File::NONBLOCK as 1, which is the C
   # runtime's value for a write-only open, so with the flag a read would
   # open the file for writing there. Windows has no named pipe in the

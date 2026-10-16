@@ -34,8 +34,8 @@ module AgentRunner
         'CHORIA_EXTERNAL_FACTS' => facts_path,
         'PATH' => ENV.fetch('PATH', ''),
       }
-      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, AGENT, request_path, reply_path, RPC_PROTOCOL,
-        unsetenv_others: true, chdir: Dir.tmpdir)
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, '--disable-gems', AGENT, request_path, reply_path,
+        RPC_PROTOCOL, unsetenv_others: true, chdir: Dir.tmpdir)
       reply = File.exist?(reply_path) ? JSON.parse(File.read(reply_path)) : {}
       Reply.new(statuscode: reply['statuscode'], statusmsg: reply['statusmsg'], data: reply['data'], raw: reply,
         stdout: stdout, stderr: stderr, exitstatus: status.exitstatus)
