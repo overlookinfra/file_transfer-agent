@@ -399,6 +399,40 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(downloaded_tree(node2)).to eq(['secret.txt'])
     end
 
+    it 'warns for every file a node could not read, since its outcome names only the first' do
+      stub_directory_stats
+      rpc.on(:list) do |_args, names|
+        entries = ['a.txt', 'b.txt'].map { |name| file_entry(name, 'x').merge(sha256: nil, error: 'Errno::EACCES: Permission denied') }
+        results_for(names, { entries: entries })
+      end
+
+      outcomes = client.download('/srv/data', destination_dirs.slice(node1))
+
+      expect(outcomes[node1].message).to include('/srv/data/a.txt')
+      expect(log.warnings).to include("/srv/data/a.txt on #{node1} could not be read for its digest: Errno::EACCES: Permission denied",
+        "/srv/data/b.txt on #{node1} could not be read for its digest: Errno::EACCES: Permission denied")
+    end
+
+    it 'asks nothing more of a node whose listed file failed and fetches the rest from the other node' do
+      stub_directory_stats
+      rpc.on(:list) do |_args, names|
+        names.map do |name|
+          first = file_entry('a.txt', 'a')
+          first = first.merge(sha256: nil, error: 'Errno::EACCES: Permission denied') if name == node1
+          rpc_result(name, { entries: [first, file_entry('b.txt', 'b')] })
+        end
+      end
+      stub_get { |path, _name| path.end_with?('a.txt') ? 'a' : 'b' }
+
+      outcomes = client.download('/srv/data', destination_dirs)
+
+      expect(get_calls.map { |call| [call[:path], call[:identities]] }).to eq([['/srv/data/a.txt', [node2]], ['/srv/data/b.txt', [node2]]])
+      expect(outcomes[node1].kind).to eq(:transfer_failed)
+      expect(downloaded_tree(node1)).to eq([])
+      expect(outcomes[node2]).to be_success
+      expect(downloaded_tree(node2)).to eq(['a.txt', 'b.txt'])
+    end
+
     it 'fails only the node whose listing describes a directory without a usable mode' do
       stub_flat_tree({ node1 => { 'a.txt' => 'a' }, node2 => { 'a.txt' => 'a' } })
       rpc.on(:list) do |_args, names|
@@ -419,15 +453,8 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
     it 'fails only the node whose tree root is described without a usable mode, before listing it' do
       stub_flat_tree({ node1 => { 'a.txt' => 'a' }, node2 => { 'a.txt' => 'a' } })
-      stub_stat do |args, names|
-        names.map do |name|
-          data = if args[:path] == '/srv/data'
-                   { exists: true, type: 'directory', symlink: false, mode: name == node2 ? nil : '0755' }
-                 else
-                   { exists: true, type: 'file', symlink: false, size: 1, mode: '0644', sha256: Digest::SHA256.hexdigest('a') }
-                 end
-          rpc_result(name, data)
-        end
+      stub_stat do |_args, names|
+        names.map { |name| rpc_result(name, { exists: true, type: 'directory', symlink: false, mode: name == node2 ? nil : '0755' }) }
       end
 
       outcomes = client.download('/srv/data', destination_dirs)

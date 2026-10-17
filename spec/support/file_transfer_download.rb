@@ -54,23 +54,11 @@ module FileTransferDownloadHelpers
     { name: name, type: 'file', symlink: symlink, size: content.bytesize, mode: '0644', sha256: Digest::SHA256.hexdigest(content) }
   end
 
-  # A flat remote directory per identity. Every stat lands in stat_paths
-  # and every list in list_calls.
+  # A flat remote directory per identity, described by the root's stat and
+  # one listing that carries every file's digest. Every list lands in
+  # list_calls.
   def stub_flat_tree(trees)
-    stub_stat do |args, names|
-      stat_paths << [args[:path], names.dup]
-      names.map do |name|
-        content = trees.fetch(name)[File.basename(args[:path])]
-        data = if args[:path] == '/srv/data'
-                 { exists: true, type: 'directory', symlink: false, mode: '0755' }
-               elsif content
-                 { exists: true, type: 'file', symlink: false, size: content.bytesize, mode: '0644', sha256: Digest::SHA256.hexdigest(content) }
-               else
-                 { exists: false }
-               end
-        rpc_result(name, data)
-      end
-    end
+    stub_directory_stats
     rpc.on(:list) do |args, names|
       list_calls << [args[:path], names]
       names.map do |name|
@@ -125,7 +113,6 @@ RSpec.shared_context 'with a download client' do
   let(:contents) { { node1 => 'a' * 12_000, node2 => 'b' * 100 } }
   let(:get_calls) { [] }
   let(:list_calls) { [] }
-  let(:stat_paths) { [] }
 
   before { FileUtils.mkdir_p(destination) }
 end

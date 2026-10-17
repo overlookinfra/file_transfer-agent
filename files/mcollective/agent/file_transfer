@@ -254,6 +254,7 @@ module FileTransfer
             size, sha256 = digest_file(entry)
             description['sha256'] = sha256
             description['size'] = size if sha256
+            description['error'] = "#{entry} is not a regular file" unless sha256
           rescue SystemCallError => e
             # A file the agent cannot read is listed without a digest and
             # with the reason, so the rest of the tree is listed and only
@@ -269,10 +270,16 @@ module FileTransfer
         # a backslash weighs four bytes there, and a <, > or &, which the
         # server writes as < and the like, nine.
         bytes += json.bytesize + (3 * json.count('"\\')) + (8 * json.count('<>&'))
-        next if bytes <= max_bytes
+        if bytes > max_bytes
+          raise Failure.new(ABORTED, "The listing of #{path} does not fit in #{max_bytes} bytes at #{entries.length} entries, so the directory " \
+                                     'is not listed; take its subdirectories one at a time')
+        end
 
-        raise Failure.new(ABORTED, "The listing of #{path} does not fit in #{max_bytes} bytes at #{entries.length} entries, so the directory " \
-                                   'is not listed; take its subdirectories one at a time')
+        # Find stats every entry again once this block returns, to walk
+        # into a directory, and raises for one that vanished in between.
+        # Only a directory needs that walk, so every other entry leaves
+        # the walk here, which closes the window a digest opened.
+        Find.prune unless description['type'] == 'directory'
       end
       { 'entries' => entries }
     end

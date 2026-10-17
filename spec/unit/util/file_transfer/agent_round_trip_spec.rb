@@ -67,6 +67,8 @@ RSpec.describe MCollective::Util::FileTransfer::Client do
     expect(downloaded[node1].path).to eq(File.join(download_dir, 'delivered'))
     expect(File.read(File.join(download_dir, 'delivered', 'top.txt'))).to eq('top')
     expect(File.read(File.join(download_dir, 'delivered', 'sub', 'inner.txt'))).to eq('inner')
-    expect(rpc.calls.map(&:first)).to include(:mkdir, :list)
+    expect(rpc.calls.map(&:first)).to include(:mkdir)
+    # The download stats the root, lists it once and fetches each file, with no stat per file.
+    expect(rpc.calls.map(&:first).last(4)).to eq([:stat, :list, :get, :get])
   end
 end

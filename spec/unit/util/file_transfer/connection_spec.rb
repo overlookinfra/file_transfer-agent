@@ -123,15 +123,18 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
       expect { MCollective::SSL.base64_decode('aGVs*bG8=') }.to raise_error(ArgumentError, 'invalid base64')
     end
 
+    it 'refuses a bad character on a later line, which the gem\'s line-anchored regex lets through' do
+      expect { MCollective::SSL.base64_decode("aGVsbG8=\naGVs*bG8=") }.to raise_error(ArgumentError, 'invalid base64')
+    end
+
     it 'refuses an empty payload, as the gem does' do
       expect { MCollective::SSL.base64_decode('') }.to raise_error(ArgumentError, 'invalid base64')
     end
 
-    it 'changes the SSL module on the first connection only' do
-      ancestors = MCollective::SSL.singleton_class.ancestors
+    it 'sits on the SSL module exactly once after a second connection' do
       described_class.new(options)
 
-      expect(MCollective::SSL.singleton_class.ancestors).to eq(ancestors)
+      expect(MCollective::SSL.singleton_class.ancestors.count { |mod| mod.name&.end_with?('::Base64Decode') }).to eq(1)
     end
   end
 
@@ -153,9 +156,10 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
       connection
     end
 
-    it 'publishes one copy of the same message to each node\'s own subject, with the reply subject' do
+    it 'publishes the message, serialized once, to each node\'s own subject with the reply subject' do
       connector.publish_connected_directed(message)
 
+      expect(message).to have_received(:payload).once
       expect(wrapper.messages.map(&:first)).to eq(['mcollective.node.node1.example.com', 'mcollective.node.node2.example.com'])
       expect(wrapper.messages.map { |_, body, _| body }.uniq.length).to eq(1)
       expect(wrapper.messages.map(&:last)).to all(eq('mcollective.reply.client.1.2'))
@@ -165,11 +169,10 @@ RSpec.describe MCollective::Util::FileTransfer::Connection do
       )
     end
 
-    it 'changes the connector class on the first connection only' do
-      ancestors = MCollective::Connector::Nats.ancestors
+    it 'sits on the connector class exactly once after a second connection' do
       described_class.new(options)
 
-      expect(MCollective::Connector::Nats.ancestors).to eq(ancestors)
+      expect(MCollective::Connector::Nats.ancestors.count { |mod| mod.name&.end_with?('::DirectPublish') }).to eq(1)
     end
   end
 

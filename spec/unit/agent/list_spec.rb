@@ -114,6 +114,15 @@ RSpec.describe 'the file_transfer agent list action' do
     expect(file).to include('name' => 'sub/data.bin', 'type' => 'file', 'size' => 11, 'sha256' => Digest::SHA256.hexdigest('hello world'))
   end
 
+  it 'digests a symbolic link to a file through its target' do
+    File.write(File.join(dir, 'target'), 'abcde')
+    File.symlink('target', File.join(dir, 'link'))
+    reply = list(dir, checksum: true)
+
+    link = reply.data['entries'].find { |entry| entry['name'] == 'link' }
+    expect(link).to include('type' => 'file', 'symlink' => true, 'size' => 5, 'sha256' => Digest::SHA256.hexdigest('abcde'))
+  end
+
   it 'lists a file it cannot read without a digest and with the reason, and the rest with their digests' do
     skip('needs a non-root user') if Process.euid.zero?
 

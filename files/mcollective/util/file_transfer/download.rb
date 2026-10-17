@@ -213,6 +213,9 @@ module MCollective
                 elsif entry[:type] == 'directory'
                   directories[entry[:name]][identity] = entry[:mode]
                 elsif entry[:type] == 'file'
+                  # Every file the node could not read is named here, since
+                  # the node's outcome names only the first.
+                  @logger.warn("#{File.join(source, entry[:name])} on #{identity} could not be read for its digest: #{entry[:error]}") if entry[:error]
                   files[entry[:name]][identity] = entry
                 else
                   @logger.warn("Skipping #{File.join(source, entry[:name])} on #{identity}, which is not a regular file or directory")
@@ -265,8 +268,8 @@ module MCollective
         # Receives every listed file from the pending nodes that listed it.
         # Returns the failures.
         #
-        # @param files [Hash{String => Array<String>}] Relative path to the identities that
-        #   have it
+        # @param files [Hash{String => Hash{String => Hash}}] Relative path to the listing entry of each
+        #   identity that has it
         # @param source [String] The directory on every node
         # @param destination_dirs [Hash{String => String}] Identity to its local directory
         # @param pending [Array<String>] The nodes still pending
