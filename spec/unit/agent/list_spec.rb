@@ -15,8 +15,10 @@ RSpec.describe 'the file_transfer agent list action' do
 
   # A list request with room for every listing these examples make, unless
   # an example says otherwise.
-  def list(path, max_bytes: 100_000)
-    run_agent('list', { path: path, max_bytes: max_bytes })
+  def list(path, max_bytes: 100_000, checksum: false)
+    request = { path: path, max_bytes: max_bytes }
+    request[:checksum] = true if checksum
+    run_agent('list', request)
   end
 
   def entry_names(reply)
@@ -98,6 +100,40 @@ RSpec.describe 'the file_transfer agent list action' do
 
     expect(reply.data['entries']).to eq([{ 'name' => 'data.bin', 'type' => 'file', 'symlink' => false,
                                            'size' => 11, 'mode' => '0640', 'mtime' => 1_700_000_000 }])
+  end
+
+  it 'digests each regular file when asked, with the size digested, and leaves a directory without a digest' do
+    Dir.mkdir(File.join(dir, 'sub'))
+    File.write(File.join(dir, 'sub', 'data.bin'), 'hello world')
+    reply = list(dir, checksum: true)
+
+    expect(reply.statuscode).to eq(0)
+    sub, file = reply.data['entries']
+    expect(sub).to include('name' => 'sub', 'type' => 'directory')
+    expect(sub).not_to have_key('sha256')
+    expect(file).to include('name' => 'sub/data.bin', 'type' => 'file', 'size' => 11, 'sha256' => Digest::SHA256.hexdigest('hello world'))
+  end
+
+  it 'lists a file it cannot read without a digest and with the reason, and the rest with their digests' do
+    skip('needs a non-root user') if Process.euid.zero?
+
+    create_files('readable', 'secret')
+    File.chmod(0o000, File.join(dir, 'secret'))
+    reply = list(dir, checksum: true)
+
+    expect(reply.statuscode).to eq(0)
+    readable, secret = reply.data['entries']
+    expect(readable).to include('name' => 'readable', 'sha256' => Digest::SHA256.hexdigest(''))
+    expect(secret).to include('name' => 'secret', 'sha256' => nil)
+    expect(secret['error']).to include('Permission denied')
+  end
+
+  it 'weighs the digest as part of the entry' do
+    create_files('a.txt')
+    plain = JSON.generate(list(dir).data['entries'].first).bytesize
+
+    expect(list(dir, max_bytes: plain * 2).statuscode).to eq(0)
+    expect(list(dir, max_bytes: plain * 2, checksum: true).statuscode).to eq(1)
   end
 
   it 'describes a subdirectory entry with type directory and its own mode' do

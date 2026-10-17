@@ -48,6 +48,12 @@ module FileTransferDownloadHelpers
     stub_stat { |_args, names| results_for(names, { exists: true, type: 'directory', symlink: false, mode: '0755' }) }
   end
 
+  # A listing entry for a regular file with the content, as the agent
+  # answers it when asked for digests.
+  def file_entry(name, content, symlink: false)
+    { name: name, type: 'file', symlink: symlink, size: content.bytesize, mode: '0644', sha256: Digest::SHA256.hexdigest(content) }
+  end
+
   # A flat remote directory per identity. Every stat lands in stat_paths
   # and every list in list_calls.
   def stub_flat_tree(trees)
@@ -68,7 +74,7 @@ module FileTransferDownloadHelpers
     rpc.on(:list) do |args, names|
       list_calls << [args[:path], names]
       names.map do |name|
-        entries = trees.fetch(name).keys.sort.map { |entry| { name: entry, type: 'file', symlink: false } }
+        entries = trees.fetch(name).sort.map { |entry, content| file_entry(entry, content) }
         rpc_result(name, { entries: entries })
       end
     end

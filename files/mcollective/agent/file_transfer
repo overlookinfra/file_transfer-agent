@@ -207,16 +207,9 @@ module FileTransfer
 
       return description.merge('exists' => true, 'sha256' => nil) unless checksum && description['type'] == 'file'
 
-      # The size reported is the number of bytes digested, which for a file
-      # under /proc is what a read gives rather than the zero its stat says,
-      # so a download that reads up to that size verifies. Opened as get
-      # opens, so a path swapped for a named pipe since describe cannot
-      # block the agent.
-      size, sha256 = File.open(path, File::RDONLY | NONBLOCK | File::BINARY) do |file|
-        raise Failure.new(ABORTED, "#{path} is not a regular file") unless file.stat.file?
+      size, sha256 = digest_file(path)
+      raise Failure.new(ABORTED, "#{path} is not a regular file") if sha256.nil?
 
-        digest_io(file)
-      end
       description.merge('exists' => true, 'size' => size, 'sha256' => sha256)
     end
 
@@ -224,14 +217,17 @@ module FileTransfer
     # it, parents before their contents. The walk never follows a link, so
     # a link to a directory is listed and its contents are not, and no
     # link can make the walk loop. The directory itself is resolved first,
-    # so a link to a directory can still be listed. A listing that
-    # outgrows max_bytes, which the caller sizes to what one reply may
-    # carry, is refused, weighed as the reply carries it.
+    # so a link to a directory can still be listed. With checksum, each
+    # regular file carries its digest, or none and the reason when it
+    # cannot be read. A listing that outgrows max_bytes, which the caller
+    # sizes to what one reply may carry, is refused, weighed as the reply
+    # carries it.
     #
     # @return [Hash] entries, as the DDL declares
     def list
       path = path_input('path')
       max_bytes = [integer_input('max_bytes'), MAX_REPLY_BYTES].min
+      checksum = @data.fetch('checksum', false)
       root = File.realpath(path)
       raise Errno::ENOTDIR, path unless File.directory?(root)
 
@@ -253,6 +249,19 @@ module FileTransfer
         # that vanished in between is pruned rather than skipped.
         Find.prune if description.nil?
 
+        if checksum && description['type'] == 'file'
+          begin
+            size, sha256 = digest_file(entry)
+            description['sha256'] = sha256
+            description['size'] = size if sha256
+          rescue SystemCallError => e
+            # A file the agent cannot read is listed without a digest and
+            # with the reason, so the rest of the tree is listed and only
+            # that file fails when it is fetched.
+            description['sha256'] = nil
+            description['error'] = "#{e.class}: #{e.message}"
+          end
+        end
         entries << description.merge('name' => name)
         json = JSON.generate(entries.last)
         # The reply carries the listing as JSON inside two JSON strings
@@ -354,6 +363,22 @@ module FileTransfer
         'mode' => format('%04o', target_stat.mode & 0o7777), 'mtime' => target_stat.mtime.to_i }
     rescue Errno::ENOENT, Errno::ENOTDIR
       nil
+    end
+
+    # Digests the regular file at a path from its start. The size is the
+    # number of bytes digested, which for a file under /proc is what a
+    # read gives rather than the zero its stat says, so a download that
+    # reads up to that size verifies. Opened as get opens, so a path
+    # swapped for a named pipe since it was described cannot block the
+    # agent.
+    #
+    # @param path [String]
+    # @return [Array(Integer, String), nil] The bytes digested and the hex digest, or nil when
+    #   the path no longer holds a regular file
+    def digest_file(path)
+      File.open(path, File::RDONLY | NONBLOCK | File::BINARY) do |file|
+        digest_io(file) if file.stat.file?
+      end
     end
 
     # Streams an open file from its current position through SHA-256.

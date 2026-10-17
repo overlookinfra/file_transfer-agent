@@ -93,6 +93,7 @@ RSpec.describe 'the file_transfer DDL' do
     'stat' => ['stat', { path: '/tmp/x' }],
     'stat of a Windows path with checksum' => ['stat', { path: 'C:\\Windows\\Temp\\x', checksum: true }],
     'list' => ['list', { path: '/tmp', max_bytes: 524_288 }],
+    'list with checksum' => ['list', { path: '/tmp', max_bytes: 524_288, checksum: true }],
     'mkdir with a mode' => ['mkdir', { path: '/tmp/d', mode: '0700' }],
     'mkdir without a mode' => ['mkdir', { path: '/tmp/d' }],
   }

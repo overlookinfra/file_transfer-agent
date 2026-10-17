@@ -98,15 +98,8 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
   end
 
   it 'places a tree downloaded from a Windows path under its last component' do
-    stub_stat do |args, names|
-      data = if args[:path] == 'C:\\srv\\data'
-               { exists: true, type: 'directory', symlink: false, mode: '0755' }
-             else
-               { exists: true, type: 'file', symlink: false, size: 3, mode: '0644', sha256: Digest::SHA256.hexdigest('one') }
-             end
-      names.map { |name| rpc_result(name, data) }
-    end
-    rpc.on(:list) { |_args, names| results_for(names, { entries: [{ name: 'one.txt', type: 'file', symlink: false }] }) }
+    stub_directory_stats
+    rpc.on(:list) { |_args, names| results_for(names, { entries: [file_entry('one.txt', 'one')] }) }
     stub_get { |_path, _name| 'one' }
 
     outcomes = client.download('C:\\srv\\data', destination_dirs.slice(node1))
@@ -334,7 +327,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
         rpc_result(name, data)
       end
     end
-    rpc.on(:list) { |_args, names| results_for(names, { entries: [{ name: 'inner.txt', type: 'file', symlink: false }] }) }
+    rpc.on(:list) { |_args, names| results_for(names, { entries: [file_entry('inner.txt', 'data')] }) }
     stub_get { |_path, _name| 'data' }
 
     outcomes = client.download('/srv/data', destination_dirs)
@@ -371,31 +364,11 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(File.stat(dir_for(node1)).mode & 0o7777).to eq(0o755)
     end
 
-    it 'reports the node when a listed file can no longer be stat-ed' do
-      stub_stat do |args, names|
-        data = args[:path] == '/srv/data' ? { exists: true, type: 'directory', symlink: false, mode: '0755' } : { exists: false }
-        names.map { |name| rpc_result(name, data) }
-      end
-      rpc.on(:list) { |_args, names| results_for(names, { entries: [{ name: 'gone.txt', type: 'file', symlink: false }] }) }
-
-      outcomes = client.download('/srv/data', destination_dirs.slice(node1))
-
-      expect(outcomes[node1].kind).to eq(:transfer_failed)
-      expect(outcomes[node1].message).to include('does not exist')
-    end
-
     { 'a size' => { size: nil }, 'a size at least zero' => { size: -1 }, 'a digest' => { sha256: nil },
       'a mode' => { mode: 'rw-r--r--' } }.each do |field, odd|
-      it "reports a node whose file is described without #{field} and stops asking for it" do
-        stub_stat do |args, names|
-          data = if args[:path] == '/srv/data'
-                   { exists: true, type: 'directory', symlink: false, mode: '0755' }
-                 else
-                   { exists: true, type: 'file', symlink: false, size: 3, mode: '0644', sha256: Digest::SHA256.hexdigest('abc') }.merge(odd)
-                 end
-          names.map { |name| rpc_result(name, data) }
-        end
-        rpc.on(:list) { |_args, names| results_for(names, { entries: [{ name: 'a.txt', type: 'file', symlink: false }] }) }
+      it "reports a node whose file is listed without #{field} and does not ask for it" do
+        stub_directory_stats
+        rpc.on(:list) { |_args, names| results_for(names, { entries: [file_entry('a.txt', 'abc').merge(odd)] }) }
         rpc.on(:get) { |_args, _names| raise 'the client kept asking for a file it could not bound' }
 
         outcomes = client.download('/srv/data', destination_dirs.slice(node1))
@@ -406,11 +379,31 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       end
     end
 
+    it 'fails the file a node could not read with the reason it gave, and fetches it from the other node' do
+      stub_directory_stats
+      rpc.on(:list) do |_args, names|
+        names.map do |name|
+          entry = file_entry('secret.txt', 'top')
+          entry = entry.merge(sha256: nil, error: 'Errno::EACCES: Permission denied @ rb_sysopen - /srv/data/secret.txt') if name == node1
+          rpc_result(name, { entries: [entry] })
+        end
+      end
+      stub_get { |_path, _name| 'top' }
+
+      outcomes = client.download('/srv/data', destination_dirs)
+
+      expect(get_calls.map { |call| call[:identities] }).to eq([[node2]])
+      expect(outcomes[node1].kind).to eq(:transfer_failed)
+      expect(outcomes[node1].message).to include("/srv/data/secret.txt on #{node1} could not be read for its digest: Errno::EACCES: Permission denied")
+      expect(outcomes[node2]).to be_success
+      expect(downloaded_tree(node2)).to eq(['secret.txt'])
+    end
+
     it 'fails only the node whose listing describes a directory without a usable mode' do
       stub_flat_tree({ node1 => { 'a.txt' => 'a' }, node2 => { 'a.txt' => 'a' } })
       rpc.on(:list) do |_args, names|
         names.map do |name|
-          entries = [{ name: 'a.txt', type: 'file', symlink: false }]
+          entries = [file_entry('a.txt', 'a')]
           entries.unshift({ name: 'sub', type: 'directory', symlink: false, mode: 'drwxr-xr-x' }) if name == node2
           rpc_result(name, { entries: entries })
         end
@@ -454,8 +447,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
       outcomes = client.download('/srv/data', destination_dirs)
 
-      expect(stat_paths.select { |path, _names| path.start_with?('/srv/data/') }.map(&:last).uniq).to eq([[node2]])
-      expect(get_calls.flat_map { |call| call[:identities] }).not_to include(node1)
+      expect(get_calls.map { |call| call[:identities] }.uniq).to eq([[node2]])
       expect(outcomes[node1].kind).to eq(:transfer_failed)
       expect(outcomes[node1].message).to include('could not be created')
       expect(outcomes[node2]).to be_success
@@ -475,39 +467,14 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
       outcomes = client.download('/srv/data', destination_dirs)
 
-      expect(stat_paths).to include(['/srv/data/b.txt', [node2]])
-      expect(stat_paths.count { |path, _names| path == '/srv/data/b.txt' }).to eq(1)
+      expect(get_calls.select { |call| call[:path] == '/srv/data/b.txt' }.map { |call| call[:identities] }).to eq([[node2]])
       expect(outcomes[node1].kind).to eq(:checksum_mismatch)
       expect(outcomes[node1].message).to include('a.txt')
       expect(outcomes[node2]).to be_success
       expect(downloaded_tree(node2)).to eq(['a.txt', 'b.txt'])
     end
 
-    it 'fails only the node whose listed file is described as something else' do
-      stub_flat_tree({ node1 => { 'one.txt' => 'one' }, node2 => { 'one.txt' => 'one' } })
-      stub_stat do |args, names|
-        names.map do |name|
-          data = if args[:path] == '/srv/data'
-                   { exists: true, type: 'directory', symlink: false, mode: '0755' }
-                 elsif name == node1
-                   { exists: true, type: 'directory', symlink: false, size: nil, mode: '0755', sha256: nil }
-                 else
-                   { exists: true, type: 'file', symlink: false, size: 3, mode: '0644', sha256: Digest::SHA256.hexdigest('one') }
-                 end
-          rpc_result(name, data)
-        end
-      end
-      stub_get_replies { |_args, _name| { data: encoded('one'), bytes: 3, size: 3 } }
-
-      outcomes = client.download('/srv/data', destination_dirs)
-
-      expect(get_calls.map { |call| call[:identities] }).to eq([[node2]])
-      expect(outcomes[node1].kind).to eq(:transfer_failed)
-      expect(outcomes[node1].message).to include('was listed as a file and is no longer one')
-      expect(outcomes[node2]).to be_success
-    end
-
-    it 'stats each file only on the nodes that listed it, so a node missing one keeps the rest' do
+    it 'fetches each file only from the nodes that listed it, so a node missing one keeps the rest' do
       trees = {
         node1 => { 'a.txt' => 'a', 'b.txt' => 'b' },
         node2 => { 'b.txt' => 'b' },
@@ -519,8 +486,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
       expect(outcomes.values).to all(be_success)
       expect(downloaded_tree(node1)).to eq(['a.txt', 'b.txt'])
       expect(downloaded_tree(node2)).to eq(['b.txt'])
-      expect(stat_paths).to include(['/srv/data/a.txt', [node1]])
-      expect(stat_paths.count { |path, _names| path == '/srv/data/a.txt' }).to eq(1)
+      expect(get_calls.select { |call| call[:path] == '/srv/data/a.txt' }.map { |call| call[:identities] }).to eq([[node1]])
     end
 
     it 'asks every node for a listing that fits the message data size in one call' do
@@ -530,26 +496,17 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
 
       expect(outcomes.values).to all(be_success)
       expect(list_calls).to eq([['/srv/data', nodes]])
-      expect(rpc.calls.find { |call| call.first == :list }[1]).to eq(path: '/srv/data', max_bytes: 16 * 1024)
+      expect(rpc.calls.find { |call| call.first == :list }[1]).to eq(path: '/srv/data', max_bytes: 16 * 1024, checksum: true)
       expect(downloaded_tree(node1)).to eq(['a.txt'])
       expect(downloaded_tree(node2)).to eq(['b.txt'])
     end
 
     it 'downloads a nested tree from one listing and skips a directory reached through a link' do
-      stub_stat do |args, names|
-        names.map do |name|
-          data = case args[:path]
-                 when '/srv/data' then { exists: true, type: 'directory', symlink: false, mode: '0755' }
-                 when '/srv/data/top.txt' then { exists: true, type: 'file', size: 3, mode: '0644', sha256: Digest::SHA256.hexdigest('top') }
-                 when '/srv/data/sub/deeper/last.txt' then { exists: true, type: 'file', size: 4, mode: '0644', sha256: Digest::SHA256.hexdigest('last') }
-                 end
-          rpc_result(name, data)
-        end
-      end
+      stub_directory_stats
       rpc.on(:list) do |_args, names|
         entries = [{ name: 'linked', type: 'directory', symlink: true }, { name: 'sub', type: 'directory', symlink: false, mode: '0755' },
-                   { name: 'sub/deeper', type: 'directory', symlink: false, mode: '0755' }, { name: 'sub/deeper/last.txt', type: 'file', symlink: false },
-                   { name: 'top.txt', type: 'file', symlink: false }]
+                   { name: 'sub/deeper', type: 'directory', symlink: false, mode: '0755' }, file_entry('sub/deeper/last.txt', 'last'),
+                   file_entry('top.txt', 'top')]
         results_for(names, { entries: entries })
       end
       stub_get { |path, _name| { '/srv/data/top.txt' => 'top', '/srv/data/sub/deeper/last.txt' => 'last' }.fetch(path) }
@@ -566,15 +523,8 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
 
     it 'downloads a link to a file as the file it points at' do
-      stub_stat do |args, names|
-        data = if args[:path] == '/srv/data'
-                 { exists: true, type: 'directory', symlink: false, mode: '0755' }
-               else
-                 { exists: true, type: 'file', symlink: true, size: 6, mode: '0644', sha256: Digest::SHA256.hexdigest('linked') }
-               end
-        names.map { |name| rpc_result(name, data) }
-      end
-      rpc.on(:list) { |_args, names| results_for(names, { entries: [{ name: 'current.log', type: 'file', symlink: true }] }) }
+      stub_directory_stats
+      rpc.on(:list) { |_args, names| results_for(names, { entries: [file_entry('current.log', 'linked', symlink: true)] }) }
       stub_get { |_path, _name| 'linked' }
 
       outcomes = client.download('/srv/data', destination_dirs.slice(node1))
@@ -586,17 +536,10 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
 
     it 'downloads the files of a tree and skips with a warning each entry that is neither a file nor a directory' do
-      stub_stat do |args, names|
-        data = if args[:path] == '/srv/data'
-                 { exists: true, type: 'directory', symlink: false, mode: '0755' }
-               else
-                 { exists: true, type: 'file', size: 4, mode: '0644', sha256: Digest::SHA256.hexdigest('real') }
-               end
-        names.map { |name| rpc_result(name, data) }
-      end
+      stub_directory_stats
       rpc.on(:list) do |_args, names|
         entries = [{ name: 'app.sock', type: 'other', symlink: false }, { name: 'current.log', type: 'other', symlink: true },
-                   { name: 'real.txt', type: 'file', symlink: false }]
+                   file_entry('real.txt', 'real')]
         results_for(names, { entries: entries })
       end
       stub_get { |_path, _name| 'real' }
@@ -613,21 +556,12 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
 
     it 'lists every node in one call and gives each its own tree' do
-      stub_stat do |args, names|
-        names.map do |name|
-          data = case args[:path]
-                 when '/srv/data' then { exists: true, type: 'directory', symlink: false, mode: '0755' }
-                 when '/srv/data/sub/inner.txt' then { exists: true, type: 'file', symlink: false, size: 5, mode: '0644', sha256: Digest::SHA256.hexdigest('inner') }
-                 else { exists: true, type: 'file', symlink: false, size: 3, mode: '0644', sha256: Digest::SHA256.hexdigest('top') }
-                 end
-          rpc_result(name, data)
-        end
-      end
+      stub_directory_stats
       rpc.on(:list) do |args, names|
         list_calls << [args[:path], names]
         names.map do |name|
-          entries = [{ name: 'top.txt', type: 'file', symlink: false }]
-          entries.unshift({ name: 'sub', type: 'directory', symlink: false, mode: '0755' }, { name: 'sub/inner.txt', type: 'file', symlink: false }) if name == node1
+          entries = [file_entry('top.txt', 'top')]
+          entries.unshift({ name: 'sub', type: 'directory', symlink: false, mode: '0755' }, file_entry('sub/inner.txt', 'inner')) if name == node1
           rpc_result(name, { entries: entries })
         end
       end
@@ -643,11 +577,8 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     end
 
     it 'refuses an entry whose path leaves the tree and writes nothing outside the destination' do
-      stub_stat do |args, names|
-        data = args[:path] == '/srv/data' ? { exists: true, type: 'directory', symlink: false, mode: '0755' } : { exists: true, type: 'file', size: 5, mode: '0644', sha256: Digest::SHA256.hexdigest('pwned') }
-        names.map { |name| rpc_result(name, data) }
-      end
-      rpc.on(:list) { |_args, names| results_for(names, { entries: [{ name: '../../../escaped.txt', type: 'file', symlink: false }] }) }
+      stub_directory_stats
+      rpc.on(:list) { |_args, names| results_for(names, { entries: [file_entry('../../../escaped.txt', 'pwned')] }) }
 
       outcomes = client.download('/srv/data', destination_dirs.slice(node1))
 
@@ -663,7 +594,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
         names.map do |name|
           next rpc_result(name, {}, statuscode: 1, statusmsg: 'The listing of /srv/data does not fit in 16384 bytes at 190 entries') if name == node2
 
-          rpc_result(name, { entries: [{ name: 'a.txt', type: 'file', symlink: false }] })
+          rpc_result(name, { entries: [file_entry('a.txt', 'a')] })
         end
       end
 
@@ -678,7 +609,7 @@ RSpec.describe MCollective::Util::FileTransfer::Client, '#download' do
     it 'fails only the node whose listing is not a list of hashes and downloads the rest' do
       stub_flat_tree({ node1 => { 'a.txt' => 'a' }, node2 => { 'a.txt' => 'a' } })
       rpc.on(:list) do |_args, names|
-        names.map { |name| rpc_result(name, name == node2 ? { entries: ['a.txt'] } : { entries: [{ name: 'a.txt', type: 'file', symlink: false }] }) }
+        names.map { |name| rpc_result(name, name == node2 ? { entries: ['a.txt'] } : { entries: [file_entry('a.txt', 'a')] }) }
       end
 
       outcomes = client.download('/srv/data', destination_dirs)

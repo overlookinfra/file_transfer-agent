@@ -12,8 +12,9 @@ module MCollective
       # One download: what happened to each node. run is the whole
       # lifecycle: stat with a checksum on every node, each file through the
       # Receiver, which assembles every copy beside its destination, and for
-      # a tree one list call to the nodes, then the local directories and
-      # the files it named, one Outcome per node. Reads no chunks itself.
+      # a tree one list call to the nodes, which carries the size, digest
+      # and mode of every file, then the local directories and the files it
+      # named, one Outcome per node. Reads no chunks itself.
       class Download
         DOWNLOADABLE_TYPES = ['file', 'directory'].freeze
         # A mode as the agent reports one, three or four octal digits.
@@ -162,29 +163,30 @@ module MCollective
         # Lists the tree under the source on the nodes, a download round at
         # a time since every reply may weigh the message data size. The
         # agent answers every entry with its path relative to the source,
-        # parents before their contents, and refuses a tree that lists
-        # larger than the message data size, which fails that node. A
-        # directory reached through a symbolic link comes without its
-        # contents and is skipped here with a warning, and so is anything
-        # that is neither a file nor a directory. Every path comes from the
-        # node, so each one has to be plain components all the way down
-        # before it is joined to a local path, and every directory's mode is
-        # checked before it is applied. The root's mode is the one its stat
-        # reported.
+        # parents before their contents, each regular file with its size,
+        # digest and mode, so no stat per file follows, and refuses a tree
+        # that lists larger than the message data size, which fails that
+        # node. A directory reached through a symbolic link comes without
+        # its contents and is skipped here with a warning, and so is
+        # anything that is neither a file nor a directory. Every path comes
+        # from the node, so each one has to be plain components all the way
+        # down before it is joined to a local path, and every directory's
+        # mode is checked before it is applied. The root's mode is the one
+        # its stat reported.
         #
         # @param stats [Hash{String => Hash}] Identity to its stat reply data, for the nodes
         #   where the source is a directory
         # @param source [String] The directory on every node
-        # @return [Array(Hash{String => Hash{String => String}}, Hash{String => Array<String>}, Hash{String => Outcome})] The
+        # @return [Array(Hash{String => Hash{String => String}}, Hash{String => Hash{String => Hash}}, Hash{String => Outcome})] The
         #   directories as relative path to the mode per identity that has it, the files as
-        #   relative path to the identities that have it, and the failures
+        #   relative path to each identity's listing entry for it, and the failures
         def list_trees(stats, source)
           directories = Hash.new { |hash, key| hash[key] = {} }
-          files = Hash.new { |hash, key| hash[key] = [] }
+          files = Hash.new { |hash, key| hash[key] = {} }
           failures = {}
           stats.keys.each_slice(Rpc::DOWNLOAD_BATCH_SIZE) do |group|
             response = @rpc.call(group, "file_transfer.list #{source}") do |client|
-              client.list(path: source, max_bytes: @rpc.message_data_bytes)
+              client.list(path: source, max_bytes: @rpc.message_data_bytes, checksum: true)
             end
             failures.merge!(response.errors)
             response.responded.each do |identity, data|
@@ -211,7 +213,7 @@ module MCollective
                 elsif entry[:type] == 'directory'
                   directories[entry[:name]][identity] = entry[:mode]
                 elsif entry[:type] == 'file'
-                  files[entry[:name]] << identity
+                  files[entry[:name]][identity] = entry
                 else
                   @logger.warn("Skipping #{File.join(source, entry[:name])} on #{identity}, which is not a regular file or directory")
                 end
@@ -271,19 +273,26 @@ module MCollective
         # @return [Hash{String => Outcome}]
         def fetch_tree_files(files, source, destination_dirs, pending)
           failures = {}
-          files.each do |relative, group|
+          files.each do |relative, entries|
             entry_source = File.join(source, relative)
-            group &= pending - failures.keys
+            group = entries.keys & (pending - failures.keys)
             next if group.empty?
 
-            stats, stat_failures = stat_sources(group, entry_source)
-            failures.merge!(stat_failures)
-            # The listing said file, so anything else now is the node's
-            # problem. Only a file description carries the size and digest
-            # that the download needs.
-            changed = stats.reject { |_identity, data| data[:type] == 'file' }.keys
-            failures.merge!(Outcome.failures(changed, :transfer_failed) { |identity| "#{entry_source} on #{identity} was listed as a file and is no longer one" })
-            stats = stats.except(*changed)
+            # The listing is the file's description, so an entry without
+            # the size, digest and mode the download rests on fails that
+            # node here, with the agent's reason when it could not read the
+            # file.
+            stats = {}
+            group.each do |identity|
+              entry = entries[identity]
+              if described?(entry)
+                stats[identity] = entry
+              elsif entry[:error]
+                failures[identity] = Outcome.failure(identity, :transfer_failed, "#{entry_source} on #{identity} could not be read for its digest: #{entry[:error]}")
+              else
+                failures[identity] = Outcome.failure(identity, :transfer_failed, "#{entry_source} on #{identity} was listed without a usable size, digest and mode")
+              end
+            end
             next if stats.empty?
 
             destinations = stats.keys.to_h { |identity| [identity, tree_path_for(identity, destination_dirs, source, relative)] }

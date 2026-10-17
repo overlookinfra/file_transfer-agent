@@ -74,6 +74,12 @@ end
 action "list", :description => "List every entry under a directory" do
   display :always
 
+  input :checksum,
+        :prompt      => "Checksum",
+        :description => "Compute the SHA-256 of every regular file",
+        :type        => :boolean,
+        :optional    => true
+
   input :max_bytes,
         :prompt      => "Max Bytes",
         :description => "Maximum size of the listing in bytes",
@@ -89,7 +95,7 @@ action "list", :description => "List every entry under a directory" do
         :optional    => false
 
   output :entries,
-         :description => "Every entry under the directory, parents before their contents, with name relative to the directory, type, symlink, size, mode, and mtime",
+         :description => "Every entry under the directory, parents before their contents, with name relative to the directory, type, symlink, size, mode, and mtime, and with checksum the sha256 of each regular file, or null and an error for one the agent cannot read",
          :type        => "array",
          :display_as  => "Entries"
 end

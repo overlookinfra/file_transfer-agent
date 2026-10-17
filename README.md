@@ -30,7 +30,7 @@ agent needs no MCollective runtime on the node at all.
 | `abort` | Remove the temporary file of an upload that will not finish | `destination`, `token` | `removed` |
 | `get` | Read one chunk of a file | `path`, `offset`, `max_bytes` | `data`, `bytes`, `size` |
 | `stat` | Describe a path | `path`, `checksum` | `exists`, `type`, `symlink`, `size`, `mode`, `mtime`, `sha256` |
-| `list` | List every entry under a directory | `path`, `max_bytes` | `entries` |
+| `list` | List every entry under a directory, each regular file with its digest when asked | `path`, `max_bytes`, `checksum` | `entries` |
 | `mkdir` | Create a directory and missing parents | `path`, `mode` | none |
 
 Chunk `data` is base64 encoded in both directions and never compressed.
@@ -178,7 +178,10 @@ other than Choria's is out of scope. A download round
 asks for the same, since a reply carrying it weighs less than a request:
 the node signs nothing and sends no certificate. A directory listing is
 asked for under the same size, weighed as the reply carries it, where a
-quote costs four bytes, and a node whose tree lists larger refuses it. A
+quote costs four bytes, and a node whose tree lists larger refuses it.
+The listing carries each regular file's size, digest and mode, so a tree
+download describes its files in that one call and fetches them with no
+stat per file. A
 publish guard refuses a request over the limit before it leaves the
 client and fails those nodes with `payload_too_large`, naming a lower
 message data size as the remedy. A node that does not answer a chunk is
