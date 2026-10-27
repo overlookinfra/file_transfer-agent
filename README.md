@@ -49,7 +49,48 @@ up the agent without a restart. Without Puppet, the files listed in
 server. The agent reads no settings, so
 `mcollective_agent_file_transfer::server_config` needs no keys.
 
+### Requirements
+
+The agent needs Ruby 3.2 or later, and uses nothing that Ruby 4.0 removed
+or moved out of its default gems. It runs on Linux, macOS, and Windows
+nodes under the Puppet agent's Ruby and loads only the standard library.
+On POSIX nodes the server runs the script through its shebang,
+`/opt/puppetlabs/puppet/bin/ruby --disable-gems`, which skips rubygems,
+most of a Ruby start. On Windows the server resolves the agent's name
+through `PATHEXT`, so the module installs `file_transfer.bat` beside the
+script, which runs it with the Puppet agent's `ruby.exe` at its default
+path and the same flag. There the last component of a destination may not
+contain a colon, a reserved device name such as `CON` or `COM1`, or a
+trailing dot or space, since Windows would put the file somewhere other
+than asked.
+
+## Authorization
+
+The Choria server denies every request to an agent without a policy file.
+The module writes `policies/file_transfer.policy` from
+`mcollective::policy_default`, `mcollective::site_policies`, and this
+module's own policies:
+
+```yaml
+mcollective_agent_file_transfer::policies:
+  - action: allow
+    callers: choria=openbolt.example.net
+    actions: "*"
+    facts: "*"
+    classes: "*"
+```
+
+Read-only access grants `stat list get`. Per-path restrictions need Choria's
+rego authorization provider, which sees the action arguments as
+`input.data.destination` and `input.data.path`. Every chunk of a `put`
+includes `destination`, so such a policy applies to every chunk. Pass a
+policy file through `mcollective_agent_file_transfer::rego_policy_source`.
+
+The agent runs with the Choria server's privileges and has no allowlist of
+its own.
+
 ## Further reading
 
-- [docs/agent.md](docs/agent.md): the agent's 6 actions with their inputs
-  and outputs, the temporary file, and the DDL files.
+- [docs/agent.md](docs/agent.md): why the agent is an external agent, its
+  6 actions with their inputs and outputs, the temporary file, and the DDL
+  files.

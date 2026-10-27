@@ -1,5 +1,17 @@
 # The agent
 
+## Why an external agent
+
+Choria runs a Ruby MCollective agent through a shim that loads the whole
+MCollective library for every request, which costs most of a second on a
+node before the action runs. An external agent is a plain process that reads
+the request from a file and writes the reply to another, and this one loads
+only the Ruby standard library, so a request costs a few tens of
+milliseconds. A transfer could be thousands of requests, one per chunk, and
+that difference is the difference between minutes and hours. The server also
+validates every input against the JSON DDL before the process starts, so the
+agent needs no MCollective runtime on the node at all.
+
 ## Actions
 
 | Action | Purpose | Inputs | Outputs |

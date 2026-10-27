@@ -17,11 +17,15 @@ Dir[File.join(__dir__, 'support', '*.rb')].each { |file| require file }
 
 # Every example gets its own directory for destinations, a token for the
 # file it puts, and the AgentRunner helpers that run the agent against them.
+# The context also gives the destination and the temporary file the token
+# names beside it.
 RSpec.shared_context 'with an agent root' do
   include AgentRunner
 
   let(:root) { Dir.mktmpdir('file_transfer-root') }
   let(:token) { SecureRandom.hex(8) }
+  let(:destination) { File.join(root, 'file.bin') }
+  let(:temp_file) { File.join(root, ".file_transfer-#{token}") }
 
   after { FileUtils.remove_entry_secure(root) }
 end
