@@ -1,0 +1,22 @@
+{
+  "name": "overlookinfra-mcollective_agent_file_transfer",
+  "version": "1.0.0",
+  "author": "Overlook InfraTech",
+  "license": "Apache-2.0",
+  "summary": "Chunked file transfer with SHA-256 verification",
+  "source": "https://github.com/overlookinfra/file_transfer-agent",
+  "project_page": "https://github.com/overlookinfra/file_transfer-agent",
+  "issues_url": "https://github.com/overlookinfra/file_transfer-agent/issues",
+  "dependencies": [
+    {
+      "name": "choria/mcollective",
+      "version_requirement": ">= 0.14.5 < 2.0.0"
+    }
+  ],
+  "requirements": [
+    {
+      "name": "puppet",
+      "version_requirement": ">= 8.0.0 < 10.0.0"
+    }
+  ]
+}
