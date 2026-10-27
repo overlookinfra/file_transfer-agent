@@ -48,3 +48,8 @@ up the agent without a restart. Without Puppet, the files listed in
 `data/plugin.yaml` go under `mcollective/` in the Choria libdir of a
 server. The agent reads no settings, so
 `mcollective_agent_file_transfer::server_config` needs no keys.
+
+## Further reading
+
+- [docs/agent.md](docs/agent.md): the agent's 6 actions with their inputs
+  and outputs, the temporary file, and the DDL files.

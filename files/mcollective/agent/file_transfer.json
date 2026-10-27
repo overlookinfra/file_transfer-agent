@@ -1,0 +1,284 @@
+{
+  "$schema": "https://choria.io/schemas/mcorpc/ddl/v1/agent.json",
+  "metadata": {
+    "name": "file_transfer",
+    "description": "Chunked file transfer with SHA-256 verification",
+    "author": "Overlook InfraTech",
+    "license": "Apache-2.0",
+    "version": "1.0.0",
+    "url": "https://github.com/overlookinfra/file_transfer-agent",
+    "timeout": 120,
+    "provider": "external"
+  },
+  "actions": [
+    {
+      "action": "abort",
+      "description": "Remove the temporary file of an upload that will not finish",
+      "display": "always",
+      "input": {
+        "destination": {
+          "prompt": "Destination",
+          "description": "Absolute path the upload was for, beside which its temporary file is",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "token": {
+          "prompt": "Token",
+          "description": "Token that names the temporary file, 16 lowercase hex characters chosen by the caller for one file",
+          "type": "string",
+          "validation": "\\A[0-9a-f]{16}\\z",
+          "maxlength": 16,
+          "optional": false
+        }
+      },
+      "output": {
+        "removed": {
+          "description": "Whether the temporary file existed and was removed",
+          "display_as": "Removed",
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "action": "get",
+      "description": "Read a chunk of a file as base64",
+      "display": "failed",
+      "input": {
+        "path": {
+          "prompt": "Path",
+          "description": "Absolute path of the file to read",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "offset": {
+          "prompt": "Offset",
+          "description": "Byte offset to read from",
+          "type": "integer",
+          "optional": false
+        },
+        "max_bytes": {
+          "prompt": "Max Bytes",
+          "description": "Maximum number of raw bytes to read",
+          "type": "integer",
+          "optional": false
+        }
+      },
+      "output": {
+        "data": {
+          "description": "The chunk, base64 encoded",
+          "display_as": "Data",
+          "type": "string"
+        },
+        "bytes": {
+          "description": "Raw bytes in the chunk",
+          "display_as": "Bytes",
+          "type": "integer"
+        },
+        "size": {
+          "description": "File size in bytes at the time of the read",
+          "display_as": "Size",
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "action": "list",
+      "description": "List every entry under a directory",
+      "display": "always",
+      "input": {
+        "path": {
+          "prompt": "Path",
+          "description": "Absolute path of the directory",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "max_bytes": {
+          "prompt": "Max Bytes",
+          "description": "Maximum size of the listing in bytes",
+          "type": "integer",
+          "optional": false
+        },
+        "checksum": {
+          "prompt": "Checksum",
+          "description": "Compute the SHA-256 of every regular file",
+          "type": "boolean",
+          "default": false,
+          "optional": true
+        }
+      },
+      "output": {
+        "entries": {
+          "description": "Every entry under the directory, parents before their contents, with name relative to the directory, type, symlink, size, mode, and mtime, and with checksum the sha256 of each regular file, or null and an error for one the agent cannot read",
+          "display_as": "Entries",
+          "type": "array"
+        }
+      }
+    },
+    {
+      "action": "mkdir",
+      "description": "Create a directory and any missing parents",
+      "display": "always",
+      "input": {
+        "path": {
+          "prompt": "Path",
+          "description": "Absolute path of the directory",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "mode": {
+          "prompt": "Mode",
+          "description": "Permission bits as octal digits for the directory, when this call creates it",
+          "type": "string",
+          "validation": "\\A[0-7]{3,4}\\z",
+          "maxlength": 4,
+          "optional": true
+        }
+      },
+      "output": {}
+    },
+    {
+      "action": "put",
+      "description": "Write a chunk of a file under a temporary name beside its destination, verifying it and renaming it into place on the final chunk",
+      "display": "failed",
+      "input": {
+        "destination": {
+          "prompt": "Destination",
+          "description": "Absolute path the verified file is renamed to, beside which its chunks are assembled",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "token": {
+          "prompt": "Token",
+          "description": "Token that names the temporary file, 16 lowercase hex characters chosen by the caller for one file",
+          "type": "string",
+          "validation": "\\A[0-9a-f]{16}\\z",
+          "maxlength": 16,
+          "optional": false
+        },
+        "offset": {
+          "prompt": "Offset",
+          "description": "Byte offset to write at, where 0 creates the file",
+          "type": "integer",
+          "optional": false
+        },
+        "data": {
+          "prompt": "Data",
+          "description": "The chunk, base64 encoded",
+          "type": "string",
+          "validation": "\\A[A-Za-z0-9+/]*={0,2}\\z",
+          "maxlength": 67108864,
+          "optional": false
+        },
+        "final": {
+          "prompt": "Final",
+          "description": "Whether this is the last chunk of the file",
+          "type": "boolean",
+          "default": false,
+          "optional": true
+        },
+        "sha256": {
+          "prompt": "SHA-256",
+          "description": "Expected SHA-256 hex digest of the whole file, required with final",
+          "type": "string",
+          "validation": "\\A[0-9a-f]{64}\\z",
+          "maxlength": 64,
+          "optional": true
+        },
+        "mode": {
+          "prompt": "Mode",
+          "description": "Permission bits as octal digits to apply to the verified file, with final",
+          "type": "string",
+          "validation": "\\A[0-7]{3,4}\\z",
+          "maxlength": 4,
+          "optional": true
+        }
+      },
+      "output": {
+        "bytes": {
+          "description": "Raw bytes written by this call",
+          "display_as": "Bytes",
+          "type": "integer"
+        },
+        "size": {
+          "description": "File size in bytes after the write",
+          "display_as": "Size",
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 hex digest computed on the final chunk",
+          "display_as": "SHA-256",
+          "type": "string"
+        }
+      }
+    },
+    {
+      "action": "stat",
+      "description": "Report whether a path exists and describe it",
+      "display": "always",
+      "input": {
+        "path": {
+          "prompt": "Path",
+          "description": "Absolute path on the node",
+          "type": "string",
+          "validation": "\\A.+\\z",
+          "maxlength": 4096,
+          "optional": false
+        },
+        "checksum": {
+          "prompt": "Checksum",
+          "description": "Compute the SHA-256 of a regular file",
+          "type": "boolean",
+          "default": false,
+          "optional": true
+        }
+      },
+      "output": {
+        "exists": {
+          "description": "Whether the path exists",
+          "display_as": "Exists",
+          "type": "boolean"
+        },
+        "type": {
+          "description": "One of file, directory, or other",
+          "display_as": "Type",
+          "type": "string"
+        },
+        "symlink": {
+          "description": "Whether the path itself is a symbolic link",
+          "display_as": "Symlink",
+          "type": "boolean"
+        },
+        "size": {
+          "description": "Size in bytes",
+          "display_as": "Size",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Permission bits as 4 octal digits",
+          "display_as": "Mode",
+          "type": "string"
+        },
+        "mtime": {
+          "description": "Modification time as Unix seconds",
+          "display_as": "Modified",
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 hex digest when requested for a regular file",
+          "display_as": "SHA-256",
+          "type": "string"
+        }
+      }
+    }
+  ]
+}
