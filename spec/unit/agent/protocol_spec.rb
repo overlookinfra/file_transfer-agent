@@ -114,4 +114,12 @@ RSpec.describe 'the file_transfer protocol' do
       expect(replies.map(&:stderr)).to all(be_empty)
     end
   end
+
+  describe 'the temporary file name' do
+    it 'has the same prefix in the agent and in the library, which names it in warnings and uses it for its own files' do
+      load AGENT unless defined?(FileTransfer::Agent)
+
+      expect(FileTransfer::TEMP_PREFIX).to eq(MCollective::Util::FileTransfer::TEMP_PREFIX)
+    end
+  end
 end

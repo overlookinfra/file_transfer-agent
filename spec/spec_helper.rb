@@ -34,4 +34,8 @@ RSpec.configure do |config|
   config.disable_monkey_patching!
   config.expect_with(:rspec) { |expectations| expectations.syntax = :expect }
   config.order = :random
+  # The bundle still has the 2.27.0 gem, so every example loosens the
+  # library's gem requirement to it. Remove this once the release after
+  # 2.27.0 is in the bundle.
+  config.before { stub_const('MCollective::Util::FileTransfer::GEM_REQUIREMENT', Gem::Requirement.new('>= 2.27.0')) }
 end

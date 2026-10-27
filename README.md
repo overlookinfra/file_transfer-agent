@@ -41,28 +41,37 @@ mcollective::plugin_classes:
 
 The Choria module contains every class in that list, and this one installs
 the agent, its DDL files, and its policy file where `mcollective::server`
-is true, through `mcollective::module_plugin`. The files are installed
-under `mcollective/` in the Choria libdir,
-`/opt/puppetlabs/mcollective/plugins` by default. The Choria server picks
-up the agent without a restart. Without Puppet, the files listed in
-`data/plugin.yaml` go under `mcollective/` in the Choria libdir of a
-server. The agent reads no settings, so
+is true, and the client library where `mcollective::client` is true,
+through `mcollective::module_plugin`. The Choria module sets
+`mcollective::client` to false by default, so the host that runs OpenBolt
+needs it set to true, or `mcollective_agent_file_transfer::client: true`
+for this module alone. The files are installed under `mcollective/` in the
+Choria libdir, `/opt/puppetlabs/mcollective/plugins` by default. The
+Choria server picks up the agent without a restart. Without Puppet, the
+files listed in `data/plugin.yaml` go under `mcollective/` in the Choria
+libdir of a server or a client. The agent reads no settings, so
 `mcollective_agent_file_transfer::server_config` needs no keys.
 
 ### Requirements
 
-The agent needs Ruby 3.2 or later, and uses nothing that Ruby 4.0 removed
-or moved out of its default gems. It runs on Linux, macOS, and Windows
-nodes under the Puppet agent's Ruby and loads only the standard library.
-On POSIX nodes the server runs the script through its shebang,
-`/opt/puppetlabs/puppet/bin/ruby --disable-gems`, which skips rubygems,
-most of a Ruby start. On Windows the server resolves the agent's name
-through `PATHEXT`, so the module installs `file_transfer.bat` beside the
-script, which runs it with the Puppet agent's `ruby.exe` at its default
-path and the same flag. There the last component of a destination may not
-contain a colon, a reserved device name such as `CON` or `COM1`, or a
-trailing dot or space, since Windows would put the file somewhere other
-than asked.
+The agent and the client library need Ruby 3.2 or later, and use nothing
+that Ruby 4.0 removed or moved out of its default gems. The agent runs on
+Linux, macOS, and Windows nodes under the Puppet agent's Ruby and loads
+only the standard library. On POSIX nodes the server runs the script
+through its shebang, `/opt/puppetlabs/puppet/bin/ruby --disable-gems`,
+which skips rubygems, most of a Ruby start. On Windows the server resolves
+the agent's name through `PATHEXT`, so the module installs
+`file_transfer.bat` beside the script, which runs it with the Puppet
+agent's `ruby.exe` at its default path and the same flag. There the last
+component of a destination may not contain a colon, a reserved device name
+such as `CON` or `COM1`, or a trailing dot or space, since Windows would
+put the file somewhere other than asked.
+
+The controller also needs the choria-mcorpc-support gem released after
+2.27.0, which requires Ruby 3.4 or later. The library reads the loaded
+gem's version when a `Client` is built and refuses 2.27.0 or older before
+any node is contacted. The fixes that release contains are described in
+[docs/library.md](docs/library.md).
 
 ## Authorization
 
@@ -89,8 +98,93 @@ policy file through `mcollective_agent_file_transfer::rego_policy_source`.
 The agent runs with the Choria server's privileges and has no allowlist of
 its own.
 
+## The client library
+
+The module also ships the client side of the protocol, the MCollective util
+plugin `MCollective::Util::FileTransfer`, which the client files install.
+It sends files in chunks sized to the broker's message limit, verifies
+every file with SHA-256, assembles each file under a temporary name beside
+its destination, and returns an outcome per node rather than raising for
+one node's failure. OpenBolt's Choria transport is an adapter over it.
+
+A caller sees 2 classes. `Client` takes the gem's client options and the
+arguments below, and returns an `Outcome` per node from `upload` and
+`download`:
+
+```ruby
+require 'mcollective'
+require 'mcollective/util/file_transfer'
+
+client = MCollective::Util::FileTransfer::Client.new(options, mutex: @rpc_mutex)
+
+client.upload('/srv/app.tar', '/opt/app/app.tar', ['web1.example.net', 'web2.example.net'])
+client.download('/var/log/app.log', { 'web1.example.net' => '/tmp/logs/web1' })
+```
+
+`upload` sends a file, or a directory tree, to the same destination on every
+node and returns a hash from identity to `Outcome`. A success contains the
+path the file was written to, a failure an `error_kind` and an
+`error_message`. The kinds are `no_response`, `rpc_error`, `rpc_failed`,
+`transfer_failed`, `payload_too_large`, and `checksum_mismatch`. `download`
+takes the local directory that receives each node's copy and returns the
+same.
+
+The arguments of `Client.new`:
+
+- `options`: the gem's client options hash, the parsed mco options in an
+  mco application, the transport's client options in OpenBolt.
+- `mutex`: the lock every call runs under, a caller's own when its process
+  has other RPC calls to serialize with, like OpenBolt uses. Default is a
+  lock of the client's own.
+- `logger`: any object with `debug`, `info`, `warn` and `error` methods that
+  take a message. Default is `MCollective::Log`.
+- `rpc_timeout`: seconds to wait for every node's reply to one call, and to
+  publish one call to every node. Default is 300. The wait is never shorter
+  than the agent's DDL timeout of 120 seconds, and one window covers a
+  whole batch of chunk requests, so a slow link needs a longer wait or a
+  smaller `upload_batch_size`.
+- `message_data_size`: the data one message contains, in kibibytes, which
+  is the file content of a chunk and the biggest a directory listing may
+  be. Default is 512, half the Choria broker's message size limit of 1 MiB.
+- `upload_batch_size`: how many nodes one chunk request is published to at
+  once. Default is 256, which keeps one batch under 256 MiB in memory on
+  the controller.
+
+A node that does not answer a chunk is reported as `no_response`, and a
+request over the broker's limit fails its nodes with `payload_too_large`
+before it is sent, naming a lower message data size as the remedy. Nothing
+is retried. How the sizes and the waits were chosen is in
+[docs/library.md](docs/library.md).
+
+## Where files are written
+
+Where files are written generally follows the POSIX tool that does the same
+job. An upload of a file into a destination that is a directory on a node
+is written inside it under the source's name, like `mv` does, and into a
+destination whose directory doesn't exist fails that node and creates
+nothing, like `scp` does. An upload of a directory tree creates the
+destination and its missing parents, like `mkdir -p` then `cp -R` would,
+with the parents made under the umask and each directory given the
+source's mode. Reading follows a symbolic link to a file and sends what it
+points at, like `cp` of a single file does. A walk never goes through a
+link to a directory, so it can't loop, and skips it with a warning, since
+neither side creates links. A named pipe, a device or a dangling link in a
+tree is skipped with a warning on both sides. A download creates the local
+directory and one directory per node under it, like OpenBolt does for other
+transports, and gives each copy the mode the node reported, under the
+umask, with the owner always able to read and write it.
+
+Every file is assembled under the name `.file_transfer-<token>` beside its
+destination and renamed into place once verified. The one thing a transfer
+can leave behind is such a file, when the caller exited in the middle of it
+or the node could not be reached to remove it, and it is safe to remove by
+hand.
+
 ## Further reading
 
 - [docs/agent.md](docs/agent.md): why the agent is an external agent, its
   6 actions with their inputs and outputs, the temporary file, and the DDL
   files.
+- [docs/library.md](docs/library.md): how the client library is layered,
+  the message, batch and round sizes and the limits behind them, the
+  timeouts, unthreaded publishing, and the gem fixes it depends on.
