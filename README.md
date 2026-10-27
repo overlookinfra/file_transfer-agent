@@ -41,26 +41,27 @@ mcollective::plugin_classes:
 
 The Choria module contains every class in that list, and this one installs
 the agent, its DDL files, and its policy file where `mcollective::server`
-is true, and the client library where `mcollective::client` is true,
-through `mcollective::module_plugin`. The Choria module sets
-`mcollective::client` to false by default, so the host that runs OpenBolt
-needs it set to true, or `mcollective_agent_file_transfer::client: true`
-for this module alone. The files are installed under `mcollective/` in the
-Choria libdir, `/opt/puppetlabs/mcollective/plugins` by default. The
-Choria server picks up the agent without a restart. Without Puppet, the
-files listed in `data/plugin.yaml` go under `mcollective/` in the Choria
-libdir of a server or a client. The agent reads no settings, so
+is true, and the client library and `mco file_transfer` where
+`mcollective::client` is true, through `mcollective::module_plugin`. The
+Choria module sets `mcollective::client` to false by default, so the host
+that runs `mco file_transfer` or OpenBolt needs it set to true, or
+`mcollective_agent_file_transfer::client: true` for this module alone. The
+files are installed under `mcollective/` in the Choria libdir,
+`/opt/puppetlabs/mcollective/plugins` by default. The Choria server picks
+up the agent without a restart. Without Puppet, the files listed in
+`data/plugin.yaml` go under `mcollective/` in the Choria libdir of a server
+or a client. The agent reads no settings, so
 `mcollective_agent_file_transfer::server_config` needs no keys.
 
 ### Requirements
 
-The agent and the client library need Ruby 3.2 or later, and use nothing
-that Ruby 4.0 removed or moved out of its default gems. The agent runs on
-Linux, macOS, and Windows nodes under the Puppet agent's Ruby and loads
-only the standard library. On POSIX nodes the server runs the script
-through its shebang, `/opt/puppetlabs/puppet/bin/ruby --disable-gems`,
-which skips rubygems, most of a Ruby start. On Windows the server resolves
-the agent's name through `PATHEXT`, so the module installs
+The agent, the client library, and the command need Ruby 3.2 or later, and
+use nothing that Ruby 4.0 removed or moved out of its default gems. The
+agent runs on Linux, macOS, and Windows nodes under the Puppet agent's Ruby
+and loads only the standard library. On POSIX nodes the server runs the
+script through its shebang, `/opt/puppetlabs/puppet/bin/ruby
+--disable-gems`, which skips rubygems, most of a Ruby start. On Windows the
+server resolves the agent's name through `PATHEXT`, so the module installs
 `file_transfer.bat` beside the script, which runs it with the Puppet
 agent's `ruby.exe` at its default path and the same flag. There the last
 component of a destination may not contain a colon, a reserved device name
@@ -97,6 +98,28 @@ policy file through `mcollective_agent_file_transfer::rego_policy_source`.
 
 The agent runs with the Choria server's privileges and has no allowlist of
 its own.
+
+## Command line
+
+The client files install `mco file_transfer`:
+
+```
+mco file_transfer upload /srv/app.tar /opt/app/app.tar -I web1.example.net -I web2.example.net
+mco file_transfer download /var/log/app.log /tmp/logs -F role=web
+```
+
+`upload` sends a file or directory tree to the destination on every matched
+node. `download` fetches the source from every matched node into a directory
+under `DIRECTORY` named after the node, such as
+`DIRECTORY/web1.example.net/app.log`. The usual filters select the nodes,
+and `--rpc-timeout`, `--message-data-size` and `--upload-batch-size` map
+onto the client arguments below. mco's own `--timeout` has no effect on
+this command, which is why it has a flag of its own, and
+`--discovery-timeout` bounds the discovery of the nodes. `--one`,
+`--limit-nodes` and `--batch` are refused, since the library addresses
+every node it is given and batches on its own. The exit code follows mco
+commands: 0 when every node succeeded, 2 when any failed, 3 when no node
+responded, and 1 when no node matched or the command could not run.
 
 ## The client library
 
