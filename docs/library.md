@@ -112,14 +112,14 @@ version.
 
 ## The gem it runs on
 
-The controller's choria-mcorpc-support gem needs the 3 fixes merged
-after its 2.27.0 release: the check on every received message before its
-base64 is decoded runs through `String#count` instead of a regex over
-the whole message, a direct request is serialized once per batch
-instead of once per node, and an explicit `threaded: false` in the client
-options wins over the client configuration. The library included the
-first 2 as overrides until they were merged. With 2.27.0 every transfer
-still works, with the gem's regex costing the controller more per reply
-than decoding and parsing the reply together, one serialization per node
-per chunk, and a client configuration that turns threading on losing the
-publish guard's refusal in the publisher thread.
+The controller's choria-mcorpc-support gem must be 2.28.0 or later, the
+release with the 3 fixes the library needs: the check on every received
+message before its base64 is decoded runs through `String#count` instead
+of a regex over the whole message, a direct request is serialized once per
+batch instead of once per node, and an explicit `threaded: false` in the
+client options wins over the client configuration. The library included
+the first 2 as overrides until they were merged, and refuses an older gem
+when a `Client` is built. Under 2.27.0 the gem's regex cost the controller
+more per reply than decoding and parsing the reply together, each chunk
+was serialized once per node, and a client configuration that turned
+threading on lost the publish guard's refusal in the publisher thread.

@@ -55,8 +55,9 @@ or a client. The agent reads no settings, so
 
 ### Requirements
 
-The agent, the client library, and the command need Ruby 3.2 or later, and
-use nothing that Ruby 4.0 removed or moved out of its default gems. The
+The agent needs Ruby 3.2 or later. The client library and the command need
+Ruby 3.4 or later, like the gem below. All 3 use nothing that Ruby 4.0
+removed or moved out of its default gems. The
 agent runs on Linux, macOS, and Windows nodes under the Puppet agent's Ruby
 and loads only the standard library. On POSIX nodes the server runs the
 script through its shebang, `/opt/puppetlabs/puppet/bin/ruby
@@ -68,10 +69,10 @@ component of a destination may not contain a colon, a reserved device name
 such as `CON` or `COM1`, or a trailing dot or space, since Windows would
 put the file somewhere other than asked.
 
-The controller also needs the choria-mcorpc-support gem released after
-2.27.0, which requires Ruby 3.4 or later. The library reads the loaded
-gem's version when a `Client` is built and refuses 2.27.0 or older before
-any node is contacted. The fixes that release contains are described in
+The controller also needs choria-mcorpc-support 2.28.0 or later, which
+requires Ruby 3.4 or later. The library reads the loaded gem's version
+when a `Client` is built and refuses an older gem before any node is
+contacted. The fixes 2.28.0 contains are described in
 [docs/library.md](docs/library.md).
 
 ## Authorization

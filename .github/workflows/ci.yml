@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.2'
+          ruby-version: '3.4'
           bundler-cache: true
       - run: bundle exec rubocop
 
@@ -27,8 +27,6 @@ jobs:
     strategy:
       matrix:
         ruby:
-          - '3.2'
-          - '3.3'
           - '3.4'
           - '4.0'
     name: Ruby ${{ matrix.ruby }}

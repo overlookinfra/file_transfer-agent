@@ -9,11 +9,10 @@ require_relative 'upload'
 module MCollective
   module Util
     module FileTransfer
-      # The gem release after 2.27.0, which honors an explicit threaded false
-      # in the client options. The gem's VERSION constant is stale, 2.24.1
-      # in the 2.27.0 release, so the check reads the loaded gem's
-      # specification instead.
-      GEM_REQUIREMENT = Gem::Requirement.new('> 2.27.0')
+      # The first release that honors an explicit threaded false in the
+      # client options. The gem's VERSION constant is stale, 2.24.1 even in
+      # 2.28.0, so the check reads the loaded gem's specification instead.
+      GEM_REQUIREMENT = Gem::Requirement.new('>= 2.28.0')
 
       # Checks the sizes, reads the caller's paths as UTF-8 and refuses invalid ones, builds
       # the Connection and one Rpc from the caller's options, and starts a new Upload or Download

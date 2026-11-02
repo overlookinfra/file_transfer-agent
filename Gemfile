@@ -10,11 +10,7 @@ group :rubocop do
 end
 
 group :test do
-  # The gems that choria-mcorpc-support requires without declaring them,
-  # which Ruby 3.4 and 4.0 no longer load from the standard library.
-  gem 'base64', require: false
-  gem 'choria-mcorpc-support', require: false
-  gem 'logger', require: false
+  gem 'choria-mcorpc-support', '>= 2.28.0', require: false
   gem 'rake', require: false
   gem 'rspec', require: false
 end
