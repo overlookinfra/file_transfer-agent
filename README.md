@@ -11,19 +11,15 @@ is meant for smaller files. Gigabytes belong on a file server.
 
 ## Installation
 
-The module is a Puppet module that depends on `choria/mcollective`. Put it
-in the Puppet environment under the directory name
-`mcollective_agent_file_transfer`, either with a Puppetfile entry from its
-Git repository:
+The module is a Puppet module that depends on `choria/mcollective`. Install
+it from the Puppet Forge with a Puppetfile entry:
 
 ```
-mod 'mcollective_agent_file_transfer',
-  git: 'https://github.com/overlookinfra/file_transfer-agent',
-  ref: 'main'
+mod 'overlookinfra-mcollective_agent_file_transfer'
 ```
 
 or with a clone of the repository into the environment's modules directory
-under that name:
+under the directory name `mcollective_agent_file_transfer`:
 
 ```
 git clone https://github.com/overlookinfra/file_transfer-agent mcollective_agent_file_transfer
