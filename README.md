@@ -213,10 +213,13 @@ steps.
    module and pushes it to the Puppet Forge as
    `overlookinfra/mcollective_agent_file_transfer`, and creates the GitHub
    release with the tarball attached and the changelog section as its notes.
+   If the Forge push fails, the tag already exists and a rerun stops on it,
+   so delete the tag and run Release again.
 
-The changelog lists pull requests and issues under the labels `enhancement`,
-`bug` and `backwards-incompatible`, and leaves out those labeled
-`skip-changelog`.
+The changelog lists every merged pull request and closed issue, grouped
+under the labels `enhancement`, `bug` and `backwards-incompatible`, and
+leaves out those labeled `skip-changelog`, `dependencies`, `duplicate`,
+`question`, `invalid`, `wontfix` or `wont-fix`.
 
 Both workflows run as a bot account in the `release` environment and need
 these repository settings:
