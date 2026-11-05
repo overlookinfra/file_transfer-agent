@@ -3,7 +3,7 @@
 source 'https://rubygems.org'
 
 group :rubocop do
-  gem 'rubocop', '~> 1.86.0'
+  gem 'rubocop', '~> 1.92.2'
   gem 'rubocop-performance'
   gem 'rubocop-rake'
   gem 'rubocop-rspec'
