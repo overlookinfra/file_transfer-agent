@@ -1,0 +1,72 @@
+---
+name: Setup Git and SSH signing
+description: Configure SSH key for signing and set global git author/committer identity.
+
+outputs:
+  git_author_name:
+    description: Git author name configured by this action.
+    value: ${{ steps.identity.outputs.git_author_name }}
+  git_author_email:
+    description: Git author email configured by this action.
+    value: ${{ steps.identity.outputs.git_author_email }}
+  git_committer_name:
+    description: Git committer name configured by this action.
+    value: ${{ steps.identity.outputs.git_committer_name }}
+  git_committer_email:
+    description: Git committer email configured by this action.
+    value: ${{ steps.identity.outputs.git_committer_email }}
+
+inputs:
+  ssh_private_key:
+    description: SSH private key used for commit/tag signing. Pass this from workflow secrets.
+    required: true
+  git_author_name:
+    description: Git author name.
+    required: true
+  git_author_email:
+    description: Git author email.
+    required: true
+  git_committer_name:
+    description: Git committer name.
+    required: true
+  git_committer_email:
+    description: Git committer email.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Export identity outputs
+      id: identity
+      shell: bash
+      run: |
+        echo "git_author_name=${{ inputs.git_author_name }}" >> "$GITHUB_OUTPUT"
+        echo "git_author_email=${{ inputs.git_author_email }}" >> "$GITHUB_OUTPUT"
+        echo "git_committer_name=${{ inputs.git_committer_name }}" >> "$GITHUB_OUTPUT"
+        echo "git_committer_email=${{ inputs.git_committer_email }}" >> "$GITHUB_OUTPUT"
+
+    - name: Mask SSH private key
+      shell: bash
+      run: |
+        echo "::add-mask::${{ inputs.ssh_private_key }}"
+
+    - name: Add SSH key
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.ssh_private_key }}" > ~/.ssh/github_actions
+        chmod 600 ~/.ssh/github_actions
+        export SSH_AUTH_SOCK=/tmp/ssh_agent.sock
+        ssh-agent -a "$SSH_AUTH_SOCK" > /dev/null
+        ssh-add ~/.ssh/github_actions
+        echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+
+    - name: Setup git
+      shell: bash
+      run: |
+        git config --global user.email "${{ inputs.git_author_email }}"
+        git config --global user.name "${{ inputs.git_author_name }}"
+        git config --global gpg.format ssh
+        git config --global user.signingkey ~/.ssh/github_actions
+        git config --global commit.gpgsign true
+        git config --global tag.gpgsign true

@@ -204,6 +204,36 @@ can leave behind is such a file, when the caller exited in the middle of it
 or the node could not be reached to remove it, and it is safe to remove by
 hand.
 
+## Releasing
+
+The Prepare Release and Release workflows under Actions do a release in 3
+steps.
+
+1. Run Prepare Release with the version, such as `1.1.0`. It sets that
+   version in metadata.json and in both DDL files, regenerates CHANGELOG.md
+   from the merged pull requests and closed issues, and opens a pull request.
+2. Review and merge that pull request.
+3. Run Release with the same version. It creates a signed tag, builds the
+   module and pushes it to the Puppet Forge as
+   `overlookinfra/mcollective_agent_file_transfer`, and creates the GitHub
+   release with the tarball attached and the changelog section as its notes.
+
+The changelog lists pull requests and issues under the labels `enhancement`,
+`bug` and `backwards-incompatible`, and leaves out those labeled
+`skip-changelog`.
+
+Both workflows run as a bot account in the `release` environment and need
+these repository settings:
+
+- `RELEASE_GITHUB_PAT`, a secret with a fine-grained token of the bot that
+  has read and write access to contents and pull requests
+- `RELEASE_SSH_PRIVATE_KEY`, a secret with an SSH key registered as a
+  signing key on the bot's account
+- `PUPPET_FORGE_API_KEY`, a secret with an API key of the `overlookinfra`
+  Forge account
+- `RELEASE_GIT_NAME` and `RELEASE_GIT_EMAIL`, variables with the bot's git
+  identity
+
 ## Further reading
 
 - [docs/agent.md](docs/agent.md): why the agent is an external agent, its

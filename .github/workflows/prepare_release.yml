@@ -1,0 +1,90 @@
+name: 'Prepare Release'
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to be released.'
+        required: true
+        type: string
+      base-branch:
+        description: 'The branch that will be used as the origin for the release branch.'
+        required: false
+        default: 'main'
+        type: string
+
+permissions: {}
+
+env:
+  BUNDLE_WITH: release
+
+jobs:
+  prepare_release:
+    name: 'Prepare Release'
+    environment: release
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'overlookinfra'
+    steps:
+      - name: Validate version format
+        run: |
+          # Module versions look like 1.2.3
+          if ! echo "${{ inputs.version }}" | grep -qE '^[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+$'; then
+            echo "::error::Version '${{ inputs.version }}' does not match expected format (semver like 1.2.3)"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.base-branch }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_GITHUB_PAT }}
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+
+      - name: Setup git and SSH signing
+        id: git_identity
+        uses: ./.github/actions/setup-git-ssh-signing
+        with:
+          ssh_private_key: ${{ secrets.RELEASE_SSH_PRIVATE_KEY }}
+          git_author_name: ${{ vars.RELEASE_GIT_NAME }}
+          git_author_email: ${{ vars.RELEASE_GIT_EMAIL }}
+          git_committer_name: ${{ vars.RELEASE_GIT_NAME }}
+          git_committer_email: ${{ vars.RELEASE_GIT_EMAIL }}
+
+      - name: Display bundle environment
+        run: |
+          bundle env
+
+      - name: Update to new version
+        run: |
+          bundle exec rake vox:version:bump:full[${{ inputs.version }}]
+
+      - name: Prepare the release
+        env:
+          # https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication
+          CHANGELOG_GITHUB_TOKEN: '${{ secrets.RELEASE_GITHUB_PAT }}'
+        run: bundle exec rake release:prepare
+
+      - name: Create pull Request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          commit-message: "Release ${{ inputs.version }}"
+          branch: "release-${{ inputs.version }}"
+          base: ${{ inputs.base-branch }}
+          delete-branch: true
+          title: "Release ${{ inputs.version }}"
+          labels: skip-changelog
+          token: '${{ secrets.RELEASE_GITHUB_PAT }}'
+          assignees: '${{ github.triggering_actor }}'
+          author: '${{ steps.git_identity.outputs.git_author_name }} <${{ steps.git_identity.outputs.git_author_email }}>'
+          committer: '${{ steps.git_identity.outputs.git_committer_name }} <${{ steps.git_identity.outputs.git_committer_email }}>'
+          signoff: true
+          body: |
+            Automated release-prep from commit ${{ github.sha }}.
+
+            After merging this PR, run the **Release** workflow to create the tag, push the module to the Puppet Forge and create the GitHub release.

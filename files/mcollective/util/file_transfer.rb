@@ -15,7 +15,6 @@ module MCollective
     # The client side of the file_transfer agent.
     # Client and Outcome are the public surface.
     module FileTransfer
-      VERSION = '1.0.0'
       # The name every temporary file starts with, on a node beside a put's
       # destination and here beside a download's.
       TEMP_PREFIX = '.file_transfer-'
