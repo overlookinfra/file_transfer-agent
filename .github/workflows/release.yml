@@ -25,14 +25,6 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.repository_owner == 'overlookinfra'
     steps:
-      - name: Validate version format
-        run: |
-          # Module versions look like 1.2.3
-          if ! echo "${{ inputs.version }}" | grep -qE '^[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+$'; then
-            echo "::error::Version '${{ inputs.version }}' does not match expected format (semver like 1.2.3)"
-            exit 1
-          fi
-
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,60 +48,12 @@ jobs:
           git_committer_name: ${{ vars.RELEASE_GIT_NAME }}
           git_committer_email: ${{ vars.RELEASE_GIT_EMAIL }}
 
-      - name: Check tag doesn't already exist
+      - name: Check metadata.json contains the version
         run: |
-          if git rev-parse "${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "::error::Tag '${{ inputs.version }}' already exists!"
-            exit 1
-          fi
-
-      - name: Check metadata.json carries the version
-        run: |
-          if ! grep -q '"version": "${{ inputs.version }}"' metadata.json; then
-            echo "::error::metadata.json does not carry version ${{ inputs.version }}. Merge the release PR first."
-            exit 1
-          fi
-
-      - name: Extract release notes from CHANGELOG.md
-        id: extract_notes
-        run: |
-          ruby << 'EOF'
-          version = "${{ inputs.version }}"
-
-          unless File.exist?('CHANGELOG.md')
-            warn "::warning::No CHANGELOG.md found, release will use auto-generated notes only"
-            File.write(ENV['GITHUB_OUTPUT'], "has_notes=false\n", mode: 'a')
-            exit 0
-          end
-
-          changelog = File.read('CHANGELOG.md')
-
-          # Match ## [VERSION]...\n then capture everything until the next ## [ or end of file
-          match = changelog.match(/^## \[#{Regexp.escape(version)}\][^\n]*\n(?<notes>.+?)(?=^## \[|\z)/m)
-
-          unless match
-            warn "::warning::Could not find version #{version} in CHANGELOG.md, release will use auto-generated notes only"
-            File.write(ENV['GITHUB_OUTPUT'], "has_notes=false\n", mode: 'a')
-            exit 0
-          end
-
-          notes = match[:notes].strip
-
-          if notes.empty?
-            warn "::warning::Version #{version} section is empty, release will use auto-generated notes only"
-            File.write(ENV['GITHUB_OUTPUT'], "has_notes=false\n", mode: 'a')
-            exit 0
-          end
-
-          File.write('release_notes.md', notes)
-          File.write(ENV['GITHUB_OUTPUT'], "has_notes=true\n", mode: 'a')
-          puts "Extracted release notes for version #{version}"
-          EOF
+          bundle exec rake release:check[${{ inputs.version }}]
 
       - name: Create signed tag
-        run: |
-          git tag -s -m "Release ${{ inputs.version }}" "${{ inputs.version }}"
-          git push origin "${{ inputs.version }}"
+        run: bundle exec rake release:tag
 
       - name: Build and push the module to the Puppet Forge
         env:
@@ -119,17 +63,4 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_GITHUB_PAT }}
-        run: |
-          RELEASE_ARGS=(
-            "${{ inputs.version }}"
-            --title "${{ inputs.version }}"
-            --generate-notes
-            --verify-tag
-            --latest
-          )
-
-          if [ "${{ steps.extract_notes.outputs.has_notes }}" = "true" ]; then
-            RELEASE_ARGS+=(--notes-file release_notes.md)
-          fi
-
-          gh release create "${RELEASE_ARGS[@]}" pkg/*.tar.gz
+        run: bundle exec rake release:github

@@ -203,7 +203,7 @@ hand.
 ## Releasing
 
 The Prepare Release and Release workflows under Actions do a release in 3
-steps.
+steps. Their steps call the rake tasks under `rakelib/`.
 
 1. Run Prepare Release with the version, such as `1.1.0`. It sets that
    version in metadata.json and in both DDL files, regenerates CHANGELOG.md

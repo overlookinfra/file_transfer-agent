@@ -6,6 +6,7 @@
 /.vendor/
 /spec/
 /Rakefile
+/rakelib/
 /.bundle/
 /coverage/
 /.github/
