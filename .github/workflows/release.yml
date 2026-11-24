@@ -49,8 +49,9 @@ jobs:
           git_committer_email: ${{ vars.RELEASE_GIT_EMAIL }}
 
       - name: Check metadata.json contains the version
-        run: |
-          bundle exec rake release:check[${{ inputs.version }}]
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bundle exec rake "release:check[$VERSION]"
 
       - name: Create signed tag
         run: bundle exec rake release:tag

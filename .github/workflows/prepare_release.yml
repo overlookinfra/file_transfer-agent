@@ -53,8 +53,9 @@ jobs:
           bundle env
 
       - name: Update to new version
-        run: |
-          bundle exec rake vox:version:bump:full[${{ inputs.version }}]
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bundle exec rake "vox:version:bump:full[$VERSION]"
 
       - name: Prepare the release
         env:
