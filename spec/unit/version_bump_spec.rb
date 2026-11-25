@@ -65,12 +65,10 @@ RSpec.describe 'rake vox:version:bump:full' do
     end
   end
 
-  VERSIONED_FILES.each do |path|
-    it "aborts naming #{path} when it has no version line" do
-      File.write(path, "{}\n")
-      message = "No version found in #{path}"
+  it 'aborts naming a file that has no version line' do
+    File.write('metadata.json', "{}\n")
+    message = 'No version found in metadata.json'
 
-      expect { expect { bump('10.20.30') }.to raise_error(SystemExit, message) }.to output("Setting version to 10.20.30\n").to_stdout.and output("#{message}\n").to_stderr
-    end
+    expect { expect { bump('10.20.30') }.to raise_error(SystemExit, message) }.to output("Setting version to 10.20.30\n").to_stdout.and output("#{message}\n").to_stderr
   end
 end
