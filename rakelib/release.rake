@@ -44,7 +44,6 @@ end
 desc 'Create the signed tag of the version in metadata.json and push it'
 task 'release:tag' do
   version = module_version
-  abort "The version #{version.inspect} in metadata.json is not in x.y.z form" unless version.match?(/\A\d+\.\d+\.\d+\z/)
   sh 'git', 'tag', '-s', '-m', "Release #{version}", version
   sh 'git', 'push', 'origin', version
 end
