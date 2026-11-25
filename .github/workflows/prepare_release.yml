@@ -25,14 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository_owner == 'overlookinfra'
     steps:
-      - name: Validate version format
-        run: |
-          # Module versions look like 1.2.3
-          if ! echo "${{ inputs.version }}" | grep -qE '^[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+$'; then
-            echo "::error::Version '${{ inputs.version }}' does not match expected format (semver like 1.2.3)"
-            exit 1
-          fi
-
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,8 +53,9 @@ jobs:
           bundle env
 
       - name: Update to new version
-        run: |
-          bundle exec rake vox:version:bump:full[${{ inputs.version }}]
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bundle exec rake "vox:version:bump:full[$VERSION]"
 
       - name: Prepare the release
         env:

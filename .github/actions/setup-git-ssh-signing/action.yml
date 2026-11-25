@@ -45,11 +45,6 @@ runs:
         echo "git_committer_name=${{ inputs.git_committer_name }}" >> "$GITHUB_OUTPUT"
         echo "git_committer_email=${{ inputs.git_committer_email }}" >> "$GITHUB_OUTPUT"
 
-    - name: Mask SSH private key
-      shell: bash
-      run: |
-        echo "::add-mask::${{ inputs.ssh_private_key }}"
-
     - name: Add SSH key
       shell: bash
       run: |

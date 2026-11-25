@@ -36,12 +36,15 @@ Style/ArgumentsForwarding:
 Performance/CollectionLiteralInLoop:
   Enabled: false
 
-# The agent is a script and the DDL a data file, so these specs describe
-# them by name rather than by a class.
+# The agent is a script, the DDL a data file, and the version bump and the
+# release check rake tasks, so these specs describe them by name rather than
+# by a class.
 RSpec/DescribeClass:
   Exclude:
     - 'spec/unit/agent/**/*'
     - 'spec/unit/ddl_spec.rb'
+    - 'spec/unit/version_bump_spec.rb'
+    - 'spec/unit/release_check_spec.rb'
 
 RSpec/ExampleLength:
   Enabled: false
